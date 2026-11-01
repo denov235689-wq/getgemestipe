@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS user_gifts(
   created_at INTEGER, lost_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS gift_values(base_name TEXT PRIMARY KEY, value INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS pvp_games(
   id INTEGER PRIMARY KEY AUTOINCREMENT, creator_id INTEGER, opponent_id INTEGER, stake INTEGER,
   status TEXT DEFAULT 'open', winner_id INTEGER, payout INTEGER DEFAULT 0, created_at INTEGER, finished_at INTEGER
@@ -89,7 +90,7 @@ addCol('mines_games', 'gift_id', 'INTEGER');
 
 const DEFAULTS = {
   rocket_rtp: '95', mines_rtp: '95', min_bet: '1', max_bet: '1000',
-  ref_bonus: '5', contest_prize: '100', pvp_fee: '5',
+  ref_bonus: '5', contest_prize: '100', pvp_fee: '5', gift_to_balance: '1', gift_credit_pct: '100',
 };
 const insSetting = db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)');
 Object.entries(DEFAULTS).forEach(([k, v]) => insSetting.run(k, v));
@@ -281,6 +282,28 @@ app.post('/api/gifts/:id/buy', auth, wrap(async (req) => {
 /* ---- Gift yordamchilari ---- */
 const giftValue = (base) => { const r = db.prepare('SELECT value FROM gift_values WHERE base_name=?').get(base); return r ? r.value : 0; };
 const giftOf = (id) => (id ? db.prepare('SELECT * FROM user_gifts WHERE id=?').get(id) : null);
+const kvGet = (k) => { const r = db.prepare('SELECT value FROM kv WHERE key=?').get(k); return r ? r.value : ''; };
+const kvSet = (k, v) => db.prepare('INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(k, String(v));
+
+// Narxi ma'lum gift: balansga o'tkazadi (yoki inventarda qoldiradi). { credit, gift } yoki null qaytaradi
+function settleGiftDeposit(giftId) {
+  return db.transaction(() => {
+    const g = db.prepare("SELECT * FROM user_gifts WHERE id=? AND status IN ('pending','owned')").get(giftId);
+    if (!g || g.value < 1) return null;
+    if (!getS('gift_to_balance')) {
+      db.prepare("UPDATE user_gifts SET status='owned' WHERE id=?").run(g.id);
+      return { credit: 0, gift: g };
+    }
+    const credit = Math.floor((g.value * getS('gift_credit_pct')) / 100);
+    db.prepare("UPDATE user_gifts SET status='credited' WHERE id=?").run(g.id);
+    if (credit > 0) {
+      addBal(g.owner_id, credit);
+      db.prepare('INSERT OR IGNORE INTO payments(user_id,amount,charge_id,payload,created_at) VALUES(?,?,?,?,?)')
+        .run(g.owner_id, credit, 'gift:' + g.id, 'gift:' + g.name, now());
+    }
+    return { credit, gift: g };
+  })();
+}
 function lockGift(uid, giftId) {
   const g = db.prepare("SELECT * FROM user_gifts WHERE id=? AND owner_id=? AND status='owned'").get(giftId, uid);
   if (!g) fail('Gift topilmadi yoki band');
@@ -295,7 +318,14 @@ function notifyLost(g, uid) {
 }
 
 app.get('/api/mygifts', auth, wrap((req) => ({
-  gifts: db.prepare("SELECT id,name,base_name,value,status FROM user_gifts WHERE owner_id=? AND status IN ('owned','bet') ORDER BY id DESC").all(req.user.id),
+  gifts: db.prepare("SELECT id,name,base_name,value,status FROM user_gifts WHERE owner_id=? AND status IN ('owned','bet','pending') ORDER BY id DESC").all(req.user.id),
+})));
+
+app.get('/api/giftdeposit', auth, wrap(() => ({
+  relayer: process.env.RELAYER_USERNAME || 'AVTOGIFT',
+  to_balance: !!getS('gift_to_balance'),
+  pct: getS('gift_credit_pct'),
+  prices: db.prepare('SELECT base_name n, value v FROM gift_values WHERE value>0 ORDER BY value DESC LIMIT 50').all(),
 })));
 
 /* ---- Rocket (jonli raund) ---- */
@@ -617,6 +647,8 @@ ADMIN.post('/settings', wrap((req) => {
     cur[k] = v;
   }
   if (cur.pvp_fee > 50) fail('PVP komissiya 50% dan oshmasin');
+  if (cur.gift_to_balance !== 0 && cur.gift_to_balance !== 1) fail('gift_to_balance 0 yoki 1 bo\'lsin');
+  if (cur.gift_credit_pct < 1 || cur.gift_credit_pct > 100) fail('Gift foizi 1 dan 100 gacha bo\'lsin');
   if (cur.min_bet > cur.max_bet) fail('Minimal stavka maksimaldan katta bo\'lmasin');
   const up = db.prepare('UPDATE settings SET value=? WHERE key=?');
   db.transaction(() => { for (const k of Object.keys(DEFAULTS)) up.run(String(cur[k]), k); })();
@@ -713,14 +745,28 @@ ADMIN.post('/balance', wrap(async (req) => {
   return { balance: getBal(uid) };
 }));
 
-ADMIN.post('/giftvalue', wrap((req) => {
+ADMIN.post('/giftvalue', wrap(async (req) => {
   const base = String(req.body.base_name || '').slice(0, 80);
   const value = Number(req.body.value);
   if (!base || !Number.isInteger(value) || value < 0) fail('Gift nomi va qiymati (butun son) kerak');
-  db.transaction(() => {
+  const pend = db.transaction(() => {
     db.prepare('INSERT INTO gift_values(base_name,value) VALUES(?,?) ON CONFLICT(base_name) DO UPDATE SET value=excluded.value').run(base, value);
-    db.prepare("UPDATE user_gifts SET value=? WHERE base_name=? AND status='owned'").run(value, base);
+    db.prepare("UPDATE user_gifts SET value=? WHERE base_name=? AND status IN ('owned','pending')").run(value, base);
+    return db.prepare("SELECT id FROM user_gifts WHERE base_name=? AND status='pending'").all(base);
   })();
+  let credited = 0;
+  if (value > 0) {
+    for (const p of pend) {
+      const r = settleGiftDeposit(p.id);
+      if (r) {
+        credited++;
+        await tell(r.gift.owner_id, r.credit > 0
+          ? `✅ Giftingiz (${r.gift.name}) hisoblandi: balansingizga +${r.credit}⭐ tushdi.`
+          : `🎁 Giftingiz (${r.gift.name}) narxi belgilandi: ${value}⭐.`);
+      }
+    }
+  }
+  return { credited };
 }));
 
 ADMIN.post('/lostgifts/:id/transfer', wrap(async (req) => {
@@ -751,16 +797,29 @@ async function onGift(m) {
   console.log('[gift] kelgan xabar:', JSON.stringify(m).slice(0, 900));
   const gft = parseGift(m);
   if (!gft) return;
+  if (String(m.from.id) === kvGet('relayer_id')) return; // relayer akkauntning o'z xabari
   ensureUser(m.from);
   if (gft.ownedId && db.prepare('SELECT 1 FROM user_gifts WHERE owned_gift_id=?').get(gft.ownedId)) return;
   const val = giftValue(gft.base) || gft.star;
-  db.prepare('INSERT INTO user_gifts(owner_id,owned_gift_id,connection_id,base_name,name,value,created_at) VALUES(?,?,?,?,?,?,?)')
-    .run(m.from.id, gft.ownedId, m.business_connection_id || '', gft.base, gft.name, val, now());
+  const conn = m.business_connection_id || kvGet('bc_id');
+  const id = db.prepare('INSERT INTO user_gifts(owner_id,owned_gift_id,connection_id,base_name,name,value,status,created_at) VALUES(?,?,?,?,?,?,?,?)')
+    .run(m.from.id, gft.ownedId, conn, gft.base, gft.name, val, val > 0 ? 'owned' : 'pending', now()).lastInsertRowid;
   const chat = (m.chat && m.chat.id) || m.from.id;
-  await tell(chat, `🎁 Gift qabul qilindi: ${gft.name}` + (val ? ` (${val}⭐)` : '\nNarxini admin belgilaydi.') + '\nUni Rocket yoki Mines\'da stavka sifatida ishlatishingiz mumkin.');
-  for (const a of ADMIN_IDS) {
-    await tell(a, `🎁 Yangi gift: ${gft.name} ← ID ${m.from.id}` + (val ? ` (${val}⭐)` : '\n⚠️ Narx belgilanmagan! Admin panel → Gift narxlari'));
+  let adminNote = '';
+  if (val > 0) {
+    const r = settleGiftDeposit(id);
+    if (r && r.credit > 0) {
+      await tell(chat, `✅ Gift qabul qilindi: ${gft.name}\n💰 Balansingizga +${r.credit}⭐ avtomatik tushdi.`);
+      adminNote = ` → +${r.credit}⭐ balansga tushdi`;
+    } else {
+      await tell(chat, `🎁 Gift qabul qilindi: ${gft.name} (${val}⭐). Backpack'da turibdi, Rocket yoki Mines'da tikishingiz mumkin.`);
+      adminNote = ` (${val}⭐, inventarda)`;
+    }
+  } else {
+    await tell(chat, `🎁 Gift qabul qilindi: ${gft.name}.\nNarxi admin tomonidan belgilangach balansingizga avtomatik tushadi.`);
+    adminNote = '\n⚠️ Narx belgilanmagan! Admin panel → Gift narxlari';
   }
+  for (const a of ADMIN_IDS) await tell(a, `🎁 Yangi gift: ${gft.name} ← ID ${m.from.id}${adminNote}`);
 }
 
 async function handleUpdate(u) {
@@ -774,7 +833,13 @@ async function handleUpdate(u) {
       : { pre_checkout_query_id: q.id, ok: false, error_message: 'To\'lov ma\'lumotlari noto\'g\'ri' });
   }
 
-  if (u.business_connection) { console.log('[business_connection]', JSON.stringify(u.business_connection)); return; }
+  if (u.business_connection) {
+    const bc = u.business_connection;
+    console.log('[business_connection]', JSON.stringify(bc));
+    if (bc.id) kvSet('bc_id', bc.id);
+    if (bc.user && bc.user.id) kvSet('relayer_id', bc.user.id);
+    return;
+  }
   if (u.business_message) {
     const bm = u.business_message;
     if (bm.from && (bm.unique_gift || bm.gift)) await onGift(bm);
