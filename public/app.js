@@ -435,8 +435,18 @@
     if (!Number.isInteger(v) || v < 1) return toast('Summani kiriting', true);
     deposit(v);
   };
+  async function loadGiftDep() {
+    const g = await api('/giftdeposit');
+    $('#giftDepText').innerHTML = g.to_balance
+      ? `Giftni <b>@${esc(g.relayer)}</b> ga yuboring: u narxining <b>${g.pct}%</b> miqdorida avtomatik balansingizga tushadi.`
+      : `Giftni <b>@${esc(g.relayer)}</b> ga yuboring: u Backpack'ga tushadi va Rocket/Mines'da stavka sifatida ishlatiladi.`;
+    $('#giftDepPrices').innerHTML = g.prices.length
+      ? g.prices.map((x) => `<div><span>🎁 ${esc(x.n)}</span><b>${x.v}⭐</b></div>`).join('')
+      : '<div>Gift narxlari hali belgilanmagan</div>';
+  }
   async function loadEarn() {
     await refreshMe();
+    loadGiftDep().catch(() => {});
     if (me.is_admin) await loadAdmin(); else $('#adminBox').hidden = true;
   }
 
@@ -449,6 +459,8 @@
     ref_bonus: 'Referal bonus ⭐',
     contest_prize: 'Konkurs sovrini ⭐',
     pvp_fee: 'PVP komissiya %',
+    gift_to_balance: 'Gift kelsa: 1 = balansga avto, 0 = inventarga',
+    gift_credit_pct: 'Gift narxining necha % i balansga tushsin',
   };
   async function loadAdmin() {
     const d = await api('/admin/data');
