@@ -45,6 +45,7 @@
   let me = null;
   let minesGame = null;
   let minesBusy = false;
+  let pvTimer = 0;
 
   function setBalance(b) {
     if (me) me.balance = b;
@@ -62,7 +63,7 @@
   /* ============ Navigatsiya ============ */
   const NAV = ['backpack', 'invite', 'home', 'leaderboard', 'earn'];
   const loaders = {
-    rocket: loadRocket, mines: loadMines, keys: loadKeys, backpack: loadBackpack,
+    rocket: loadRocket, pvp: loadPvp, mines: loadMines, keys: loadKeys, backpack: loadBackpack,
     invite: loadInvite, leaderboard: loadLb, earn: loadEarn,
   };
   function show(name) {
@@ -70,6 +71,8 @@
     $$('.bottom button').forEach((b) => b.classList.toggle('on', b.dataset.go === name));
     if (!NAV.includes(name)) $$('.bottom button').forEach((b) => b.classList.remove('on'));
     window.scrollTo(0, 0);
+    clearInterval(pvTimer);
+    if (name === 'pvp') pvTimer = setInterval(() => loadPvp().catch(() => {}), 4000);
     if (loaders[name]) loaders[name]().catch(fail);
   }
   document.addEventListener('click', (e) => {
@@ -90,49 +93,117 @@
     $('#liveTrack').innerHTML = html + html;
   }
 
-  /* ============ ROCKET ============ */
-  async function loadRocket() {
-    const r = await api('/rocket');
-    $('#rkInfo').textContent = `Stavka: ${r.min_bet} – ${r.max_bet} ⭐ · Koeffitsient: ${r.min_target}x – ${r.max_target}x`;
+  /* ============ ROCKET (jonli raund) ============ */
+  const rk = { raf: 0, poll: 0, t0: 0, k: 0.18, stake: 0, gift: false, target: null, busy: false };
+
+  function setupSeg(prefix) {
+    const seg = document.querySelector(`[data-seg="${prefix}"]`);
+    seg.onclick = (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+      const gift = b.dataset.mode === 'gift';
+      $(`#${prefix}Stars`).hidden = gift;
+      $(`#${prefix}Gift`).hidden = !gift;
+      if (gift) fillGifts($(`#${prefix}GiftSel`)).catch(fail);
+    };
   }
-  function animateRocket(stop) {
-    return new Promise((resolve) => {
-      const dur = Math.min(4500, 900 + (stop - 1) * 700);
-      const ship = $('#rkShip');
-      const stage = $('#rkStage');
-      const W = stage.clientWidth - 70;
-      const t0 = performance.now();
-      (function frame(t) {
-        const p = Math.min(1, (t - t0) / dur);
-        const e = 1 - Math.pow(1 - p, 2);
-        $('#rkMult').textContent = (1 + (stop - 1) * e).toFixed(2) + 'x';
-        ship.style.transform = `translate(${p * W}px, ${-p * 120}px)`;
-        if (p < 1) requestAnimationFrame(frame); else resolve();
-      })(t0);
-    });
+  async function fillGifts(sel) {
+    const { gifts } = await api('/mygifts');
+    const ok = gifts.filter((g) => g.status === 'owned' && g.value > 0);
+    sel.innerHTML = ok.length
+      ? ok.map((g) => `<option value="${g.id}">${esc(g.name)} — ${g.value}⭐</option>`).join('')
+      : '<option value="">Gift yo\'q yoki narxi belgilanmagan</option>';
+  }
+  function stakeBody(prefix) {
+    if (!$(`#${prefix}Gift`).hidden) {
+      const id = Number($(`#${prefix}GiftSel`).value);
+      if (!id) throw new Error('Avval gift tanlang');
+      return { gift_id: id };
+    }
+    return { bet: Number($(`#${prefix}Bet`).value) };
+  }
+  setupSeg('rk');
+  setupSeg('m');
+
+  const rkMultNow = () => Math.exp((rk.k * (performance.now() - rk.t0)) / 1000);
+  function rkFrame() {
+    const m = rkMultNow();
+    $('#rkMult').textContent = (Math.floor(m * 100) / 100).toFixed(2) + 'x';
+    const p = Math.min(1, Math.log(m) / Math.log(30));
+    const W = $('#rkStage').clientWidth - 70;
+    $('#rkShip').style.transform = `translate(${p * W}px, ${-p * 120}px)`;
+    const total = Math.floor(rk.stake * m);
+    const gain = rk.gift ? Math.max(0, total - rk.stake) : total;
+    $('#rkCash').textContent = rk.gift ? `Yechib olish: gift + ${gain}⭐` : `Yechib olish: ${gain}⭐`;
+    rk.raf = requestAnimationFrame(rkFrame);
+  }
+  function rkStart(v) {
+    rk.k = v.k; rk.stake = v.bet; rk.gift = v.gift; rk.target = v.target;
+    rk.t0 = performance.now() - v.elapsed_ms;
+    $('#rkStage').className = 'stage';
+    $('#rkShip').textContent = '🚀';
+    $('#rkSetup').hidden = true;
+    $('#rkCash').hidden = false;
+    $('#rkCash').disabled = false;
+    $('#rkInfo').textContent = v.target ? `Avto yechish: ${v.target}x` : 'Xohlagan paytda "Yechib olish" ni bosing';
+    cancelAnimationFrame(rk.raf);
+    clearInterval(rk.poll);
+    rk.raf = requestAnimationFrame(rkFrame);
+    rk.poll = setInterval(rkPoll, 350);
+  }
+  async function rkPoll() {
+    if (rk.busy) return;
+    rk.busy = true;
+    try {
+      const r = await api('/rocket/state');
+      if (r.status === 'won' || r.status === 'lost') rkFinish(r);
+    } catch (e) { /* keyingi urinishda */ }
+    rk.busy = false;
+  }
+  function rkFinish(r) {
+    cancelAnimationFrame(rk.raf);
+    clearInterval(rk.poll);
+    const won = r.status === 'won';
+    $('#rkStage').className = 'stage ' + (won ? 'win' : 'lose');
+    $('#rkMult').textContent = (won ? r.mult : r.crash).toFixed(2) + 'x';
+    $('#rkShip').textContent = won ? '🚀' : '💥';
+    $('#rkCash').hidden = true;
+    $('#rkSetup').hidden = false;
+    setBalance(r.balance);
+    if (won) toast(r.gift ? `🎉 Yutdingiz! Gift qaytdi + ${r.win}⭐` : `🎉 Yutdingiz: +${r.win}⭐`);
+    else toast(r.gift ? '💥 Portladi! Gift adminga o\'tdi' : `💥 Portladi: ${r.crash.toFixed(2)}x`, true);
+    $('#rkInfo').textContent = `Portlash nuqtasi: ${r.crash.toFixed(2)}x`;
+    loadLive();
+    if (!$('#rkGift').hidden) fillGifts($('#rkGiftSel')).catch(() => {});
   }
   $('#rkGo').onclick = async () => {
     const btn = $('#rkGo');
-    const bet = Number($('#rkBet').value);
-    const target = Number($('#rkTarget').value);
     btn.disabled = true;
-    const stage = $('#rkStage');
-    stage.className = 'stage';
-    $('#rkShip').textContent = '🚀';
-    $('#rkShip').style.transform = 'none';
-    $('#rkMult').textContent = '1.00x';
     try {
-      const r = await api('/rocket/bet', 'POST', { bet, target });
-      await animateRocket(r.crash);
-      const won = r.win > 0;
-      stage.className = 'stage ' + (won ? 'win' : 'lose');
-      if (!won) $('#rkShip').textContent = '💥';
-      setBalance(r.balance);
-      toast(won ? `🎉 Yutdingiz: +${r.win}⭐` : `💥 Portladi: ${r.crash.toFixed(2)}x`, !won);
-      loadLive();
+      const body = stakeBody('rk');
+      const t = $('#rkTarget').value.trim();
+      if (t) body.target = Number(t);
+      const v = await api('/rocket/bet', 'POST', body);
+      setBalance(v.balance);
+      rkStart(v);
     } catch (e) { fail(e); }
     btn.disabled = false;
   };
+  $('#rkCash').onclick = async () => {
+    $('#rkCash').disabled = true;
+    try {
+      const r = await api('/rocket/cashout', 'POST');
+      if (r.status === 'won' || r.status === 'lost') rkFinish(r);
+    } catch (e) { fail(e); $('#rkCash').disabled = false; }
+  };
+  async function loadRocket() {
+    const r = await api('/rocket');
+    $('#rkInfo').textContent = `Stavka: ${r.min_bet} – ${r.max_bet} ⭐ · Avto yechish: ${r.min_target}x – ${r.max_target}x`;
+    const s = await api('/rocket/state');
+    if (s.status === 'active') rkStart(s);
+    else if (s.status === 'won' || s.status === 'lost') rkFinish(s);
+  }
 
   /* ============ MINES ============ */
   const mCount = $('#mCount');
@@ -156,8 +227,8 @@
     $('#mInfo').hidden = !active;
     $('#mCash').hidden = !active;
     if (active) {
-      $('#mInfo').innerHTML = `<span>Stavka: <b>${minesGame.bet}⭐</b></span><span>Mina: <b>${minesGame.mines_count}</b></span><span>Hozir: <b>${minesGame.multiplier.toFixed(2)}x</b></span><span>Keyingi: <b>${minesGame.next.toFixed(2)}x</b></span>`;
-      $('#mCash').textContent = minesGame.opened.length ? `Yechib olish: ${minesGame.win_now}⭐` : 'Avval katakni oching';
+      $('#mInfo').innerHTML = `<span>Stavka: <b>${minesGame.bet}⭐${minesGame.gift ? ' 🎁' : ''}</b></span><span>Mina: <b>${minesGame.mines_count}</b></span><span>Hozir: <b>${minesGame.multiplier.toFixed(2)}x</b></span><span>Keyingi: <b>${minesGame.next.toFixed(2)}x</b></span>`;
+      $('#mCash').textContent = minesGame.opened.length ? (minesGame.gift ? `Yechib olish: gift + ${Math.max(0, minesGame.win_now - minesGame.bet)}⭐` : `Yechib olish: ${minesGame.win_now}⭐`) : 'Avval katakni oching';
       $('#mCash').disabled = !minesGame.opened.length;
     }
     $$('#mGrid .cell').forEach((c) => {
@@ -187,10 +258,11 @@
     buildGrid();
     renderMines();
     $('#mMsg').textContent = `Stavka: ${me.min_bet} – ${me.max_bet} ⭐`;
+    if (!$('#mGift').hidden) fillGifts($('#mGiftSel')).catch(() => {});
   }
   $('#mStart').onclick = async () => {
     try {
-      const r = await api('/mines/start', 'POST', { bet: Number($('#mBet').value), mines: Number(mCount.value) });
+      const r = await api('/mines/start', 'POST', { ...stakeBody('m'), mines: Number(mCount.value) });
       minesGame = r.game;
       setBalance(r.balance);
       buildGrid();
@@ -206,8 +278,8 @@
       const r = await api('/mines/click', 'POST', { cell: Number(c.dataset.i) });
       setBalance(r.balance);
       if (r.status === 'safe') { minesGame = r.game; renderMines(); }
-      else if (r.status === 'lost') { revealEnd(r.mines, minesGame.opened, r.cell); toast('💣 Mina! Yutqazdingiz', true); }
-      else { revealEnd(r.mines, r.opened, -1); toast(`🎉 Hammasi ochildi! +${r.win}⭐`); loadLive(); }
+      else if (r.status === 'lost') { revealEnd(r.mines, minesGame.opened, r.cell); toast(r.gift ? '💣 Mina! Gift adminga o\'tdi' : '💣 Mina! Yutqazdingiz', true); }
+      else { revealEnd(r.mines, r.opened, -1); toast(r.gift ? `🎉 Hammasi ochildi! Gift qaytdi + ${r.win}⭐` : `🎉 Hammasi ochildi! +${r.win}⭐`); loadLive(); }
     } catch (err) { fail(err); }
     minesBusy = false;
   };
@@ -218,7 +290,7 @@
       const r = await api('/mines/cashout', 'POST');
       setBalance(r.balance);
       revealEnd(r.mines, r.opened, -1);
-      toast(`✅ Yechildi: +${r.win}⭐`);
+      toast(r.gift ? `✅ Yechildi: gift qaytdi + ${r.win}⭐` : `✅ Yechildi: +${r.win}⭐`);
       loadLive();
     } catch (err) { fail(err); }
     minesBusy = false;
@@ -259,7 +331,10 @@
 
   /* ============ BACKPACK ============ */
   async function loadBackpack() {
-    const [g, h] = await Promise.all([api('/gifts'), api('/history')]);
+    const [g, h, mg] = await Promise.all([api('/gifts'), api('/history'), api('/mygifts')]);
+    $('#myGifts').innerHTML = mg.gifts.length
+      ? mg.gifts.map((x) => `<div><span>🎁 ${esc(x.name)}</span><b>${x.status === 'bet' ? 'stavkada' : (x.value ? x.value + '⭐' : 'narx belgilanmagan')}</b></div>`).join('')
+      : '<div>Hozircha gift yo\'q. Gift yuborsangiz, shu yerda ko\'rinadi.</div>';
     $('#giftList').innerHTML = g.gifts.length
       ? g.gifts.map((x) => `<div><span>${esc(x.emoji)} ${esc(x.name)}</span><button data-buy="${x.id}" data-name="${esc(x.name)}" data-price="${x.price}">${x.price} ⭐</button></div>`).join('')
       : '<div>Hozircha giftlar yo\'q</div>';
@@ -280,6 +355,43 @@
     rows.sort((a, b) => b.t - a.t);
     $('#history').innerHTML = rows.length ? rows.map((r) => r.html).join('') : '<div>Tarix bo\'sh</div>';
   }
+
+  /* ============ PVP (duel) ============ */
+  async function loadPvp() {
+    const r = await api('/pvp');
+    $('#pvInfo').textContent = `Stavka: ${r.min_bet} – ${r.max_bet} ⭐ · Komissiya: ${r.fee}% · G'olib 50/50 tasodif bilan aniqlanadi`;
+    $('#pvOpen').innerHTML = r.open.length
+      ? r.open.map((d) => `<div><span>⚔️ ${esc(d.name)} · ${d.stake}⭐</span>${d.mine ? `<button class="red" data-pvc="${d.id}">Bekor</button>` : `<button data-pvj="${d.id}">Qo'shilish</button>`}</div>`).join('')
+      : '<div>Ochiq duel yo\'q. Birinchi bo\'lib yarating!</div>';
+    $('#pvRecent').innerHTML = r.recent.length
+      ? r.recent.map((x) => `<div><span>${esc(x.a)} ⚔️ ${esc(x.b)}</span><span class="win">🏆 ${esc(x.w)} +${x.payout}⭐</span></div>`).join('')
+      : '<div>Hali o\'yin bo\'lmagan</div>';
+  }
+  $('#pvCreate').onclick = async () => {
+    try {
+      const r = await api('/pvp/create', 'POST', { stake: Number($('#pvBet').value) });
+      setBalance(r.balance);
+      toast('⚔️ Duel yaratildi. Raqib kutilmoqda...');
+      loadPvp();
+    } catch (e) { fail(e); }
+  };
+  $('#pvOpen').onclick = async (e) => {
+    const j = e.target.closest('[data-pvj]');
+    const c = e.target.closest('[data-pvc]');
+    try {
+      if (j) {
+        const r = await api(`/pvp/${j.dataset.pvj}/join`, 'POST');
+        setBalance(r.balance);
+        toast(r.won ? `🏆 Yutdingiz! +${r.payout}⭐` : `😔 Yutqazdingiz: -${r.stake}⭐`, !r.won);
+        loadLive();
+      } else if (c) {
+        const r = await api(`/pvp/${c.dataset.pvc}/cancel`, 'POST');
+        setBalance(r.balance);
+        toast('Duel bekor qilindi, stavka qaytdi');
+      } else return;
+      loadPvp();
+    } catch (err) { fail(err); loadPvp().catch(() => {}); }
+  };
 
   /* ============ INVITE ============ */
   async function loadInvite() {
@@ -336,6 +448,7 @@
     max_bet: 'Maksimal stavka ⭐',
     ref_bonus: 'Referal bonus ⭐',
     contest_prize: 'Konkurs sovrini ⭐',
+    pvp_fee: 'PVP komissiya %',
   };
   async function loadAdmin() {
     const d = await api('/admin/data');
@@ -347,6 +460,8 @@
     const keys = d.keys.map((k) => `<div><span>${esc(k.emoji)} ${esc(k.name)} · ${k.price}⭐ · ${k.rewards.length} mukofot</span><button class="del" data-delkey="${k.id}">O'chirish</button></div>`).join('') || '<div>Keys yo\'q</div>';
     const gifts = d.gifts.map((g) => `<div><span>${esc(g.emoji)} ${esc(g.name)} · ${g.price}⭐</span><button class="del" data-delgift="${g.id}">O'chirish</button></div>`).join('') || '<div>Giftlar yo\'q</div>';
     const top = d.contest.map((c, i) => `<div><span>${i + 1}. ${esc(c.n)}${c.un ? ' @' + esc(c.un) : ''}</span><b>${c.s}</b></div>`).join('') || '<div>Ishtirokchi yo\'q</div>';
+    const gtypes = (d.gift_types || []).map((t, i) => `<div><span>🎁 ${esc(t.b)} · ${t.c} ta</span><span style="display:flex;gap:6px"><input data-gvi="${i}" type="number" value="${t.v || 0}" style="width:80px;margin:0"><button data-gvs="${i}">OK</button></span></div>`).join('') || '<div>Hali gift kelmagan</div>';
+    const lost = (d.lost || []).map((g) => `<div><span>🎁 ${esc(g.name)} · ${g.value}⭐<br><small style="color:var(--mute)">${esc(g.n)} · ${g.lost_at ? fmtDate(g.lost_at) : ''}</small></span>${g.status === 'lost' ? `<button data-lt="${g.id}">Menga o'tkazish</button>` : '<b>olingan ✅</b>'}</div>`).join('') || '<div>Yutqazilgan gift yo\'q</div>';
     box.innerHTML = `
       <h3>🛠 Admin panel <small style="color:var(--mute);font-size:11px">(${d.users} foydalanuvchi)</small></h3>
       <div class="card"><h4>Sozlamalar</h4>${sets}<button class="btn green" id="adSet">Saqlash</button></div>
@@ -362,6 +477,8 @@
         <input id="ngPrice" type="number" placeholder="Narxi ⭐">
         <button class="btn green" id="adGift">Gift qo'shish</button></div>
       <h4>Giftlar</h4><div class="list" id="adGifts">${gifts}</div>
+      <h4>🎁 Gift narxlari (⭐)</h4><div class="list" id="adGT">${gtypes}</div>
+      <h4>📥 Yutqazilgan giftlar (adminga o'tgan)</h4><div class="list" id="adLost">${lost}</div>
       <div class="card"><h4>⭐ Stars qo'shish</h4>
         <input id="abId" type="number" placeholder="Foydalanuvchi ID">
         <input id="abAmount" type="number" placeholder="Summa (minus = ayirish)">
@@ -401,6 +518,18 @@
       const b = e.target.closest('[data-delgift]');
       if (!b || !confirm('Gift o\'chirilsinmi?')) return;
       try { await api('/admin/gifts/' + b.dataset.delgift, 'DELETE'); loadAdmin(); } catch (err) { fail(err); }
+    };
+    $('#adGT').onclick = async (e) => {
+      const b = e.target.closest('[data-gvs]');
+      if (!b) return;
+      const i = Number(b.dataset.gvs);
+      const v = Number($(`[data-gvi="${i}"]`).value);
+      try { await api('/admin/giftvalue', 'POST', { base_name: d.gift_types[i].b, value: v }); toast('Narx saqlandi ✅'); } catch (err) { fail(err); }
+    };
+    $('#adLost').onclick = async (e) => {
+      const b = e.target.closest('[data-lt]');
+      if (!b || !confirm('Gift sizning akkauntingizga o\'tkazilsinmi?')) return;
+      try { await api(`/admin/lostgifts/${b.dataset.lt}/transfer`, 'POST'); toast('O\'tkazildi ✅'); loadAdmin(); } catch (err) { fail(err); }
     };
     $('#adBal').onclick = async () => {
       try {
