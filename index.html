@@ -48,19 +48,38 @@
         <div class="mult" id="rkMult">1.00x</div>
         <div class="ship" id="rkShip">🚀</div>
       </div>
-      <label>Stavka (⭐)</label>
-      <input type="number" id="rkBet" value="10" min="1" inputmode="numeric">
-      <label>Chiqarib olish koeffitsienti (x)</label>
-      <input type="number" id="rkTarget" value="2" min="1.01" step="0.01" inputmode="decimal">
-      <button class="btn blue" id="rkGo">Uchirish</button>
+      <div id="rkSetup">
+        <div class="seg" data-seg="rk"><button class="on" data-mode="stars">⭐ Stars</button><button data-mode="gift">🎁 Gift</button></div>
+        <div id="rkStars">
+          <label>Stavka (⭐)</label>
+          <input type="number" id="rkBet" value="10" min="1" inputmode="numeric">
+        </div>
+        <div id="rkGift" hidden>
+          <label>Gift tanlang</label>
+          <select id="rkGiftSel"></select>
+        </div>
+        <label>Avto yechish koeffitsienti (x), ixtiyoriy</label>
+        <input type="number" id="rkTarget" placeholder="Bo'sh = o'zim yechaman" min="1.01" step="0.01" inputmode="decimal">
+        <button class="btn blue" id="rkGo">Tikish va uchirish</button>
+      </div>
+      <button class="btn green" id="rkCash" hidden>Yechib olish</button>
       <p class="hint" id="rkInfo"></p>
     </section>
 
     <!-- PVP -->
     <section class="view" data-view="pvp">
       <button class="back" data-go="home">← Orqaga</button>
-      <h3 class="title">⚔️ PVP</h3>
-      <div class="card center"><p>Tez orada!</p></div>
+      <h3 class="title">⚔️ PVP Duel</h3>
+      <div class="card">
+        <label>Stavka (⭐)</label>
+        <input type="number" id="pvBet" value="10" min="1" inputmode="numeric">
+        <button class="btn yellow" id="pvCreate">Duel yaratish</button>
+        <p class="hint" id="pvInfo"></p>
+      </div>
+      <h4>Ochiq duellar</h4>
+      <div id="pvOpen" class="list"></div>
+      <h4>So'nggi natijalar</h4>
+      <div id="pvRecent" class="list"></div>
     </section>
 
     <!-- PLAY HUB -->
@@ -78,8 +97,15 @@
       <button class="back" data-go="hub">← Orqaga</button>
       <h3 class="title">💎 Mines</h3>
       <div id="mSetup">
-        <label>Stavka (⭐)</label>
-        <input type="number" id="mBet" value="10" min="1" inputmode="numeric">
+        <div class="seg" data-seg="m"><button class="on" data-mode="stars">⭐ Stars</button><button data-mode="gift">🎁 Gift</button></div>
+        <div id="mStars">
+          <label>Stavka (⭐)</label>
+          <input type="number" id="mBet" value="10" min="1" inputmode="numeric">
+        </div>
+        <div id="mGift" hidden>
+          <label>Gift tanlang</label>
+          <select id="mGiftSel"></select>
+        </div>
         <label>Minalar soni</label>
         <select id="mCount"></select>
         <button class="btn purple" id="mStart">Boshlash</button>
@@ -100,7 +126,9 @@
     <!-- BACKPACK -->
     <section class="view" data-view="backpack">
       <h3 class="title">🎒 Backpack</h3>
-      <h4>🎁 Giftlar</h4>
+      <h4>🎒 Mening giftlarim</h4>
+      <div id="myGifts" class="list"></div>
+      <h4>🎁 Gift do'koni</h4>
       <div id="giftList" class="list"></div>
       <h4>🧾 Tarix</h4>
       <div id="history" class="list"></div>
