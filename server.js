@@ -75,6 +75,10 @@ CREATE TABLE IF NOT EXISTS user_gifts(
 );
 CREATE TABLE IF NOT EXISTS gift_values(base_name TEXT PRIMARY KEY, value INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS plinko_games(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, bet INTEGER, rows INTEGER, risk TEXT,
+  slot INTEGER, mult REAL, win INTEGER, gift_id INTEGER, created_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS pvp_games(
   id INTEGER PRIMARY KEY AUTOINCREMENT, creator_id INTEGER, opponent_id INTEGER, stake INTEGER,
   status TEXT DEFAULT 'open', winner_id INTEGER, payout INTEGER DEFAULT 0, created_at INTEGER, finished_at INTEGER
@@ -87,13 +91,25 @@ addCol('rocket_bets', 'status', "TEXT DEFAULT 'done'");
 addCol('rocket_bets', 'started_ms', 'INTEGER');
 addCol('rocket_bets', 'gift_id', 'INTEGER');
 addCol('mines_games', 'gift_id', 'INTEGER');
+['model', 'backdrop', 'symbol', 'image'].forEach((c) => addCol('user_gifts', c, 'TEXT'));
+addCol('user_gifts', 'number', 'INTEGER');
+addCol('gift_values', 'image', 'TEXT');
 
 const DEFAULTS = {
   rocket_rtp: '95', mines_rtp: '95', min_bet: '1', max_bet: '1000',
-  ref_bonus: '5', contest_prize: '100', pvp_fee: '5', gift_to_balance: '1', gift_credit_pct: '100',
+  ref_bonus: '5', contest_prize: '100', pvp_fee: '5', gift_to_balance: '0', gift_credit_pct: '100', plinko_rtp: '95', gift_withdraw_fee: '150',
 };
 const insSetting = db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)');
 Object.entries(DEFAULTS).forEach(([k, v]) => insSetting.run(k, v));
+
+// Bir martalik: giftlar endi inventarga tushadi (balansga avto emas)
+if (!db.prepare("SELECT 1 FROM kv WHERE key='mig_inv_v1'").get()) {
+  db.prepare("UPDATE settings SET value='0' WHERE key='gift_to_balance'").run();
+  db.prepare("INSERT INTO kv(key,value) VALUES('mig_inv_v1','1')").run();
+}
+// Gift katalogi (Paxta Market narxlari, ⭐). Admin paneldan o'zgartiriladi
+[['B-Day Candle', 498], ['Lol Pop', 570], ['Star Notepad', 1500], ['Precious Peach', 8000], ['Scared Cat', 27777], ['Swiss Watch', 28999]]
+  .forEach(([n, v]) => db.prepare("INSERT OR IGNORE INTO gift_values(base_name,value,image) VALUES(?,?,'')").run(n, v));
 
 // Birinchi ishga tushganda namuna keyslar
 if (db.prepare('SELECT COUNT(*) c FROM keys_items').get().c === 0) {
@@ -225,7 +241,9 @@ app.get('/api/live', auth, wrap(() => {
     WHERE r.win>0 ORDER BY r.id DESC LIMIT 8`).all().map((x) => ({ e: '🚀', n: x.n, w: x.w }));
   const b = db.prepare(`SELECT u.first_name n, m.win w FROM mines_games m JOIN users u ON u.id=m.user_id
     WHERE m.status='won' ORDER BY m.id DESC LIMIT 8`).all().map((x) => ({ e: '💎', n: x.n, w: x.w }));
-  return { items: [...a, ...b].slice(0, 14) };
+  const c = db.prepare(`SELECT u.first_name n, p.win w FROM plinko_games p JOIN users u ON u.id=p.user_id
+    WHERE p.win>p.bet ORDER BY p.id DESC LIMIT 8`).all().map((x) => ({ e: '🔮', n: x.n, w: x.w }));
+  return { items: [...a, ...b, ...c].slice(0, 16) };
 }));
 
 /* ---- Keys ---- */
@@ -280,7 +298,7 @@ app.post('/api/gifts/:id/buy', auth, wrap(async (req) => {
 }));
 
 /* ---- Gift yordamchilari ---- */
-const giftValue = (base) => { const r = db.prepare('SELECT value FROM gift_values WHERE base_name=?').get(base); return r ? r.value : 0; };
+const giftValue = (base) => { const r = db.prepare('SELECT value FROM gift_values WHERE lower(base_name)=lower(?)').get(base); return r ? r.value : 0; };
 const giftOf = (id) => (id ? db.prepare('SELECT * FROM user_gifts WHERE id=?').get(id) : null);
 const kvGet = (k) => { const r = db.prepare('SELECT value FROM kv WHERE key=?').get(k); return r ? r.value : ''; };
 const kvSet = (k, v) => db.prepare('INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(k, String(v));
@@ -311,6 +329,17 @@ function lockGift(uid, giftId) {
   db.prepare("UPDATE user_gifts SET status='bet' WHERE id=?").run(g.id);
   return g;
 }
+// mult>0: gift sotiladi va narx*mult Stars to'lanadi; mult==0: gift adminga o'tadi
+function resolveGiftStake(gid, uid, stake, mult) {
+  if (mult > 0) {
+    const win = Math.floor(stake * mult);
+    db.prepare("UPDATE user_gifts SET status='sold', lost_at=? WHERE id=?").run(now(), gid);
+    if (win > 0) addBal(uid, win);
+    return { win, lostGift: null };
+  }
+  db.prepare("UPDATE user_gifts SET status='lost', lost_at=? WHERE id=?").run(now(), gid);
+  return { win: 0, lostGift: giftOf(gid) };
+}
 function notifyLost(g, uid) {
   const u = db.prepare('SELECT first_name,username FROM users WHERE id=?').get(uid) || {};
   const who = u.username ? '@' + u.username : u.first_name;
@@ -318,15 +347,65 @@ function notifyLost(g, uid) {
 }
 
 app.get('/api/mygifts', auth, wrap((req) => ({
-  gifts: db.prepare("SELECT id,name,base_name,value,status FROM user_gifts WHERE owner_id=? AND status IN ('owned','bet','pending') ORDER BY id DESC").all(req.user.id),
+  gifts: db.prepare("SELECT id,name,base_name,value,status,model,backdrop,symbol,number,image FROM user_gifts WHERE owner_id=? AND status IN ('owned','bet','pending') ORDER BY id DESC").all(req.user.id),
 })));
 
-app.get('/api/giftdeposit', auth, wrap(() => ({
-  relayer: process.env.RELAYER_USERNAME || 'AVTOGIFT',
-  to_balance: !!getS('gift_to_balance'),
-  pct: getS('gift_credit_pct'),
-  prices: db.prepare('SELECT base_name n, value v FROM gift_values WHERE value>0 ORDER BY value DESC LIMIT 50').all(),
-})));
+app.get('/api/giftdeposit', auth, wrap(() => {
+  const relayer = process.env.RELAYER_USERNAME || 'AVTOGIFT';
+  return {
+    relayer,
+    relayer_url: process.env.RELAYER_URL || `${INVITE_BASE}${relayer}`,
+    to_balance: !!getS('gift_to_balance'),
+    pct: getS('gift_credit_pct'),
+    withdraw_fee: getS('gift_withdraw_fee'),
+    prices: db.prepare(`SELECT v.base_name n, v.value v, COALESCE(v.image,'') img,
+      (SELECT COUNT(*) FROM user_gifts g WHERE lower(g.base_name)=lower(v.base_name)) c
+      FROM gift_values v WHERE v.value>0 ORDER BY v.value ASC LIMIT 60`).all(),
+  };
+}));
+
+app.post('/api/mygifts/:id/sell', auth, wrap((req) => {
+  const uid = req.user.id;
+  const id = Number(req.params.id);
+  return db.transaction(() => {
+    const g = db.prepare("SELECT * FROM user_gifts WHERE id=? AND owner_id=? AND status='owned'").get(id, uid);
+    if (!g) fail('Gift topilmadi yoki band', 404);
+    if (g.value < 1) fail('Bu giftga narx belgilanmagan');
+    const credit = Math.floor((g.value * getS('gift_credit_pct')) / 100);
+    db.prepare("UPDATE user_gifts SET status='sold', lost_at=? WHERE id=?").run(now(), g.id);
+    addBal(uid, credit);
+    db.prepare('INSERT OR IGNORE INTO payments(user_id,amount,charge_id,payload,created_at) VALUES(?,?,?,?,?)')
+      .run(uid, credit, 'sell:' + g.id, 'gift:' + g.name, now());
+    return { credit, balance: getBal(uid) };
+  })();
+}));
+
+app.post('/api/mygifts/:id/withdraw', auth, wrap(async (req) => {
+  const uid = req.user.id;
+  const id = Number(req.params.id);
+  const fee = getS('gift_withdraw_fee');
+  const g = db.transaction(() => {
+    const row = db.prepare("SELECT * FROM user_gifts WHERE id=? AND owner_id=? AND status='owned'").get(id, uid);
+    if (!row) fail('Gift topilmadi yoki band', 404);
+    const conn = row.connection_id || kvGet('bc_id');
+    if (!conn || !row.owned_gift_id) fail('Bu giftni chiqarib bo\'lmaydi (ulanish ma\'lumoti yo\'q). Admin bilan bog\'laning');
+    if (getBal(uid) < fee) fail(`Chiqarish uchun balansda kamida ${fee}⭐ bo'lishi kerak`);
+    addBal(uid, -fee);
+    db.prepare("UPDATE user_gifts SET status='withdrawing' WHERE id=?").run(row.id);
+    return { ...row, connection_id: conn };
+  })();
+  const r = await bot('transferGift', { business_connection_id: g.connection_id, owned_gift_id: g.owned_gift_id, new_owner_chat_id: uid });
+  if (!r.ok) {
+    db.transaction(() => {
+      db.prepare("UPDATE user_gifts SET status='owned' WHERE id=?").run(g.id);
+      addBal(uid, fee);
+    })();
+    fail('Chiqarib bo\'lmadi: ' + (r.description || 'noma\'lum xato') + ' (komissiya qaytarildi)', 502);
+  }
+  db.prepare("UPDATE user_gifts SET status='withdrawn', lost_at=? WHERE id=?").run(now(), g.id);
+  ADMIN_IDS.forEach((a) => tell(a, `📤 Gift chiqarildi: ${g.name} → ID ${uid} (komissiya ${fee}⭐)`));
+  return { balance: getBal(uid), fee };
+}));
 
 /* ---- Rocket (jonli raund) ---- */
 const ROCKET_K = 0.18; // o'sish tezligi: koeffitsient = e^(K * soniya)
@@ -343,16 +422,12 @@ app.get('/api/rocket', auth, wrap(() => {
 function settleRocket(r, mult) {
   let win = 0;
   let lostGift = null;
-  if (mult > 0) {
-    const total = Math.floor(r.bet * mult);
-    if (r.gift_id) {
-      db.prepare("UPDATE user_gifts SET status='owned' WHERE id=?").run(r.gift_id);
-      win = total - r.bet; // gift qaytadi + foyda
-    } else win = total;
+  if (r.gift_id) {
+    const x = resolveGiftStake(r.gift_id, r.user_id, r.bet, mult > 0 ? mult : 0);
+    win = x.win; lostGift = x.lostGift;
+  } else if (mult > 0) {
+    win = Math.floor(r.bet * mult);
     if (win > 0) addBal(r.user_id, win);
-  } else if (r.gift_id) {
-    db.prepare("UPDATE user_gifts SET status='lost', lost_at=? WHERE id=?").run(now(), r.gift_id);
-    lostGift = giftOf(r.gift_id);
   }
   db.prepare("UPDATE rocket_bets SET status='done', win=? WHERE id=?").run(win, r.id);
   return { win, lostGift };
@@ -440,17 +515,13 @@ function pickMines(c) {
   }
   return a.slice(0, c);
 }
-// Qaytaradi: balansga tushgan summa (gift bo'lsa — faqat foyda, gift o'zi qaytadi)
+// Qaytaradi: balansga tushgan summa (gift bo'lsa gift sotiladi va narx*x Stars to'lanadi)
 function minesCashout(g) {
-  const win = minesState(g).win_now;
-  db.prepare("UPDATE mines_games SET status='won', win=? WHERE id=?").run(win, g.id);
-  let credit = win;
-  if (g.gift_id) {
-    db.prepare("UPDATE user_gifts SET status='owned' WHERE id=?").run(g.gift_id);
-    credit = Math.max(0, win - g.bet);
-  }
-  if (credit > 0) addBal(g.user_id, credit);
-  return credit;
+  const st = minesState(g);
+  db.prepare("UPDATE mines_games SET status='won', win=? WHERE id=?").run(st.win_now, g.id);
+  if (g.gift_id) return resolveGiftStake(g.gift_id, g.user_id, g.bet, st.multiplier).win;
+  if (st.win_now > 0) addBal(g.user_id, st.win_now);
+  return st.win_now;
 }
 
 app.post('/api/mines/start', auth, wrap((req) => {
@@ -582,6 +653,63 @@ app.post('/api/pvp/:id/join', auth, wrap((req) => {
   return { won, payout: r.payout, stake: r.g.stake, balance: getBal(uid) };
 }));
 
+/* ---- PLINKO ---- */
+const PLINKO_ROWS = [8, 10, 12, 14, 16];
+const PLINKO_K = { low: 2.0, mid: 3.4, high: 5.2 };
+// Koeffitsientlar shunday masshtablanadiki, o'rtacha qaytish = plinko_rtp %
+function plinkoTable(rows, risk, rtp) {
+  const k = PLINKO_K[risk];
+  const bin = (n, i) => { let r = 1; for (let j = 1; j <= i; j++) r = (r * (n - j + 1)) / j; return r; };
+  const probs = [];
+  const shape = [];
+  for (let i = 0; i <= rows; i++) {
+    probs.push(bin(rows, i) / 2 ** rows);
+    shape.push(Math.exp((k * Math.abs(i - rows / 2)) / (rows / 2)));
+  }
+  const ev = probs.reduce((sum, p, i) => sum + p * shape[i], 0);
+  const scale = rtp / 100 / ev;
+  return shape.map((x) => Math.floor(x * scale * 100) / 100);
+}
+app.get('/api/plinko', auth, wrap(() => {
+  const rtp = getS('plinko_rtp');
+  const s = allS();
+  const tables = {};
+  PLINKO_ROWS.forEach((r) => {
+    tables[r] = {};
+    Object.keys(PLINKO_K).forEach((k) => { tables[r][k] = plinkoTable(r, k, rtp); });
+  });
+  return { rows: PLINKO_ROWS, tables, min_bet: s.min_bet, max_bet: s.max_bet };
+}));
+app.post('/api/plinko/drop', auth, wrap((req) => {
+  const rows = Number(req.body.rows);
+  const risk = String(req.body.risk || 'mid');
+  if (!PLINKO_ROWS.includes(rows)) fail('Qatorlar soni noto\'g\'ri');
+  if (!PLINKO_K[risk]) fail('Xavf darajasi noto\'g\'ri');
+  const giftId = Number(req.body.gift_id) || 0;
+  const bet = giftId ? 0 : parseBet(req.body.bet);
+  const uid = req.user.id;
+  const out = db.transaction(() => {
+    let stake = bet;
+    let gid = null;
+    if (giftId) { const g = lockGift(uid, giftId); stake = g.value; gid = g.id; }
+    else { if (getBal(uid) < bet) fail('Balans yetarli emas'); addBal(uid, -bet); }
+    const path = Array.from({ length: rows }, () => crypto.randomInt(0, 2));
+    const slot = path.reduce((a, b) => a + b, 0);
+    const mult = plinkoTable(rows, risk, getS('plinko_rtp'))[slot];
+    let win = 0;
+    let lostGift = null;
+    if (gid) { const x = resolveGiftStake(gid, uid, stake, mult); win = x.win; lostGift = x.lostGift; }
+    else { win = Math.floor(stake * mult); if (win > 0) addBal(uid, win); }
+    db.prepare('INSERT INTO plinko_games(user_id,bet,rows,risk,slot,mult,win,gift_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
+      .run(uid, stake, rows, risk, slot, mult, win, gid, now());
+    addScore(uid, stake);
+    return { path, slot, mult, win, gift: !!gid, lostGift };
+  })();
+  if (out.lostGift) { notifyLost(out.lostGift, uid); delete out.lostGift; }
+  out.balance = getBal(uid);
+  return out;
+}));
+
 /* ---- Leaderboard / tarix ---- */
 app.get('/api/leaderboard', auth, wrap((req) => {
   const top = db.prepare(`SELECT u.first_name n, u.username un, c.score s FROM contest_scores c
@@ -595,6 +723,7 @@ app.get('/api/history', auth, wrap((req) => {
   return {
     payments: db.prepare('SELECT amount, created_at FROM payments WHERE user_id=? ORDER BY id DESC LIMIT 15').all(uid),
     rocket: db.prepare("SELECT bet,target,crash,win,created_at FROM rocket_bets WHERE user_id=? AND status='done' ORDER BY id DESC LIMIT 10").all(uid),
+    plinko: db.prepare('SELECT bet,rows,risk,mult,win,created_at FROM plinko_games WHERE user_id=? ORDER BY id DESC LIMIT 10').all(uid),
     mines: db.prepare("SELECT bet,mines_count,win,status,created_at FROM mines_games WHERE user_id=? AND status!='active' ORDER BY id DESC LIMIT 10").all(uid),
   };
 }));
@@ -628,10 +757,10 @@ ADMIN.get('/data', wrap(() => {
     contest: db.prepare(`SELECT u.id uid, u.first_name n, u.username un, c.score s FROM contest_scores c
       JOIN users u ON u.id=c.user_id ORDER BY c.score DESC LIMIT 10`).all(),
     users: db.prepare('SELECT COUNT(*) c FROM users').get().c,
-    gift_types: db.prepare(`SELECT g.base_name b, COALESCE(v.value, MAX(g.value)) v, COUNT(*) c FROM user_gifts g
-      LEFT JOIN gift_values v ON v.base_name=g.base_name GROUP BY g.base_name ORDER BY g.base_name`).all(),
+    gift_types: db.prepare(`SELECT v.base_name b, v.value v, COALESCE(v.image,'') img,
+      (SELECT COUNT(*) FROM user_gifts g WHERE g.base_name=v.base_name) c FROM gift_values v ORDER BY v.value`).all(),
     lost: db.prepare(`SELECT g.id, g.name, g.value, g.lost_at, g.status, u.first_name n FROM user_gifts g
-      JOIN users u ON u.id=g.owner_id WHERE g.status IN ('lost','taken') ORDER BY g.lost_at DESC LIMIT 30`).all(),
+      JOIN users u ON u.id=g.owner_id WHERE g.status IN ('lost','sold','taken') ORDER BY g.lost_at DESC LIMIT 30`).all(),
   };
 }));
 
@@ -642,7 +771,8 @@ ADMIN.post('/settings', wrap((req) => {
     if (!(k in b)) continue;
     const v = Number(b[k]);
     if (!Number.isFinite(v) || v < 0) fail(`${k} noto'g'ri`);
-    if ((k === 'rocket_rtp' || k === 'mines_rtp') && (v < 1 || v > 100)) fail('RTP 1 dan 100 gacha bo\'lsin');
+    if (['rocket_rtp', 'mines_rtp', 'plinko_rtp'].includes(k) && (v < 1 || v > 100)) fail('RTP 1 dan 100 gacha bo\'lsin');
+    if (k === 'gift_withdraw_fee' && !Number.isInteger(v)) fail('Chiqarish komissiyasi butun son bo\'lsin');
     if ((k === 'min_bet' || k === 'max_bet') && (!Number.isInteger(v) || v < 1)) fail('Stavka butun son (>=1) bo\'lsin');
     cur[k] = v;
   }
@@ -746,13 +876,16 @@ ADMIN.post('/balance', wrap(async (req) => {
 }));
 
 ADMIN.post('/giftvalue', wrap(async (req) => {
-  const base = String(req.body.base_name || '').slice(0, 80);
+  const base = String(req.body.base_name || '').trim().slice(0, 80);
   const value = Number(req.body.value);
+  const image = String(req.body.image || '').trim().slice(0, 500);
   if (!base || !Number.isInteger(value) || value < 0) fail('Gift nomi va qiymati (butun son) kerak');
   const pend = db.transaction(() => {
-    db.prepare('INSERT INTO gift_values(base_name,value) VALUES(?,?) ON CONFLICT(base_name) DO UPDATE SET value=excluded.value').run(base, value);
-    db.prepare("UPDATE user_gifts SET value=? WHERE base_name=? AND status IN ('owned','pending')").run(value, base);
-    return db.prepare("SELECT id FROM user_gifts WHERE base_name=? AND status='pending'").all(base);
+    const ex = db.prepare('SELECT base_name FROM gift_values WHERE lower(base_name)=lower(?)').get(base);
+    const key = ex ? ex.base_name : base;
+    db.prepare("INSERT INTO gift_values(base_name,value,image) VALUES(?,?,?) ON CONFLICT(base_name) DO UPDATE SET value=excluded.value, image=CASE WHEN excluded.image<>'' THEN excluded.image ELSE image END").run(key, value, image);
+    db.prepare("UPDATE user_gifts SET value=? WHERE base_name=? AND status IN ('owned','pending')").run(value, key);
+    return db.prepare("SELECT id FROM user_gifts WHERE base_name=? AND status='pending'").all(key);
   })();
   let credited = 0;
   if (value > 0) {
@@ -762,7 +895,7 @@ ADMIN.post('/giftvalue', wrap(async (req) => {
         credited++;
         await tell(r.gift.owner_id, r.credit > 0
           ? `✅ Giftingiz (${r.gift.name}) hisoblandi: balansingizga +${r.credit}⭐ tushdi.`
-          : `🎁 Giftingiz (${r.gift.name}) narxi belgilandi: ${value}⭐.`);
+          : `🎁 Giftingiz (${r.gift.name}) narxi belgilandi: ${value}⭐. Backpack'da tikish, sotish yoki chiqarish mumkin.`);
       }
     }
   }
@@ -770,7 +903,7 @@ ADMIN.post('/giftvalue', wrap(async (req) => {
 }));
 
 ADMIN.post('/lostgifts/:id/transfer', wrap(async (req) => {
-  const g = db.prepare("SELECT * FROM user_gifts WHERE id=? AND status='lost'").get(Number(req.params.id));
+  const g = db.prepare("SELECT * FROM user_gifts WHERE id=? AND status IN ('lost','sold')").get(Number(req.params.id));
   if (!g) fail('Gift topilmadi', 404);
   if (!g.connection_id || !g.owned_gift_id) fail('Bu gift uchun ulanish ma\'lumoti yo\'q, qo\'lda oling');
   const r = await bot('transferGift', { business_connection_id: g.connection_id, owned_gift_id: g.owned_gift_id, new_owner_chat_id: req.user.id });
@@ -790,7 +923,9 @@ function parseGift(m) {
   const name = String(inner.name || base).slice(0, 80);
   const star = Number(raw.star_count || inner.star_count || inner.stars || 0) || 0;
   const ownedId = String(m.owned_gift_id || raw.owned_gift_id || '');
-  return { base, name, star, ownedId };
+  const nm = (o) => (o && typeof o === 'object' ? String(o.name || '') : String(o || '')).slice(0, 60);
+  const image = String((inner.model && inner.model.image_url) || inner.preview_url || raw.preview_url || inner.image_url || '').slice(0, 500);
+  return { base, name, star, ownedId, model: nm(inner.model), backdrop: nm(inner.backdrop), symbol: nm(inner.symbol), number: Number(inner.number) || null, image };
 }
 
 async function onGift(m) {
@@ -800,11 +935,16 @@ async function onGift(m) {
   if (String(m.from.id) === kvGet('relayer_id')) return; // relayer akkauntning o'z xabari
   ensureUser(m.from);
   if (gft.ownedId && db.prepare('SELECT 1 FROM user_gifts WHERE owned_gift_id=?').get(gft.ownedId)) return;
-  const val = giftValue(gft.base) || gft.star;
+  const ex = db.prepare('SELECT base_name FROM gift_values WHERE lower(base_name)=lower(?)').get(gft.base);
+  const key = ex ? ex.base_name : gft.base;
+  db.prepare("INSERT INTO gift_values(base_name,value,image) VALUES(?,0,?) ON CONFLICT(base_name) DO UPDATE SET image=CASE WHEN COALESCE(image,'')='' THEN excluded.image ELSE image END").run(key, gft.image);
+  const val = giftValue(key) || gft.star;
   const conn = m.business_connection_id || kvGet('bc_id');
-  const id = db.prepare('INSERT INTO user_gifts(owner_id,owned_gift_id,connection_id,base_name,name,value,status,created_at) VALUES(?,?,?,?,?,?,?,?)')
-    .run(m.from.id, gft.ownedId, conn, gft.base, gft.name, val, val > 0 ? 'owned' : 'pending', now()).lastInsertRowid;
+  const id = db.prepare(`INSERT INTO user_gifts(owner_id,owned_gift_id,connection_id,base_name,name,value,status,created_at,model,backdrop,symbol,number,image)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(m.from.id, gft.ownedId, conn, key, gft.name, val, val > 0 ? 'owned' : 'pending', now(), gft.model, gft.backdrop, gft.symbol, gft.number, gft.image).lastInsertRowid;
   const chat = (m.chat && m.chat.id) || m.from.id;
+  const info = [gft.model && `Model: ${gft.model}`, gft.backdrop && `Fon: ${gft.backdrop}`, gft.symbol && `Belgi: ${gft.symbol}`].filter(Boolean).join(' · ');
   let adminNote = '';
   if (val > 0) {
     const r = settleGiftDeposit(id);
@@ -812,12 +952,12 @@ async function onGift(m) {
       await tell(chat, `✅ Gift qabul qilindi: ${gft.name}\n💰 Balansingizga +${r.credit}⭐ avtomatik tushdi.`);
       adminNote = ` → +${r.credit}⭐ balansga tushdi`;
     } else {
-      await tell(chat, `🎁 Gift qabul qilindi: ${gft.name} (${val}⭐). Backpack'da turibdi, Rocket yoki Mines'da tikishingiz mumkin.`);
+      await tell(chat, `🎁 Gift qabul qilindi: ${gft.name} (${val}⭐)${info ? '\n' + info : ''}\nMini App → Backpack: tikish, sotish yoki chiqarish mumkin.`);
       adminNote = ` (${val}⭐, inventarda)`;
     }
   } else {
-    await tell(chat, `🎁 Gift qabul qilindi: ${gft.name}.\nNarxi admin tomonidan belgilangach balansingizga avtomatik tushadi.`);
-    adminNote = '\n⚠️ Narx belgilanmagan! Admin panel → Gift narxlari';
+    await tell(chat, `🎁 Gift qabul qilindi: ${gft.name}.\nNarxi admin tomonidan belgilangach hisobingizda ishlaydi.`);
+    adminNote = '\n⚠️ Narx belgilanmagan! Admin panel → Gift katalogi';
   }
   for (const a of ADMIN_IDS) await tell(a, `🎁 Yangi gift: ${gft.name} ← ID ${m.from.id}${adminNote}`);
 }
