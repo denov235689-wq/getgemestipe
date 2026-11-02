@@ -115,14 +115,15 @@
       <button class="back" data-go="home">← Orqaga</button>
       <h3 class="title">⚔️ PVP Duel</h3>
       <div class="panel">
-        <label>Stavka (⭐)</label>
+        <p class="hint" style="text-align:left;margin-top:0">Ikki o'yinchi tikadi. <b>Kim ko'p tiksa, g'alaba shansi shuncha baland.</b> G'olibni g'ildirak aniqlaydi.</p>
+        <label>O'z duelingizni yarating: stavka (⭐)</label>
         <input type="number" id="pvBet" value="10" min="1" inputmode="numeric">
         <button class="btn yellow" id="pvCreate">Duel yaratish</button>
         <p class="hint" id="pvInfo"></p>
       </div>
-      <h4>Ochiq duellar</h4>
-      <div id="pvOpen" class="list"></div>
-      <h4>So'nggi natijalar</h4>
+      <div class="sechead"><h4>Ochiq duellar</h4><span>Stavka yozing va qo'shiling</span></div>
+      <div id="pvOpen" class="pvlist"></div>
+      <div class="sechead"><h4>So'nggi natijalar</h4></div>
       <div id="pvRecent" class="list"></div>
     </section>
 
@@ -130,11 +131,42 @@
     <section class="view" data-view="hub">
       <button class="back" data-go="home">← Orqaga</button>
       <h3 class="title">🎮 Play Hub</h3>
+      <div class="upcard" data-go="upgrade">
+        <span class="tag hot"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c1 3 4 5 4 9a4 4 0 0 1-8 0c0-2 1-3 2-4 0 2 1 2 1.5 2C11 8 11 5 12 3z"/></svg>HOT</span>
+        <h2>Upgrade</h2>
+        <p>Orzu giftingizni tanlang</p>
+        <div class="upart"><div class="upwheel mini" style="--p:15"><div class="upring"></div><div class="upgift">💖</div><i class="uparrowwrap" style="transform:rotate(58deg)"><i class="uparrow"></i></i></div><b class="uppct">15%</b></div>
+      </div>
       <div class="tiles">
         <div class="tile g" data-go="mines"><b>💎</b><em>Mines</em><small>Minalarni aylanib o'ting</small></div>
         <div class="tile r" data-go="keys"><b>🔑</b><em>Keys</em><small>Keys oching, mukofot oling</small></div>
         <div class="tile p wide" data-go="plinko"><b class="pegs"><i></i><i></i><i></i><i></i><i></i><i></i></b><em>Plinko</em><small>Shar tashlang, koeffitsient oling</small></div>
       </div>
+    </section>
+
+    <!-- ============ UPGRADE ============ -->
+    <section class="view" data-view="upgrade">
+      <button class="back" data-go="hub">← Orqaga</button>
+      <h3 class="title">⬆️ Upgrade</h3>
+      <div class="uprow">
+        <div class="upwheel" id="upWheel" style="--p:0">
+          <div class="upring"></div>
+          <div class="upgift" id="upCenter">🎁</div>
+          <div class="uparrowwrap" id="upArrowWrap"><i class="uparrow"></i></div>
+        </div>
+        <div class="uppctlabel" id="upPct">0%</div>
+      </div>
+      <div class="panel">
+        <label>Sizning stavkangiz</label>
+        <div class="seg" data-seg="up"><button class="on" data-mode="stars">⭐ Stars</button><button data-mode="gift">🎁 Gift</button></div>
+        <div id="upStars"><input type="number" id="upBet" value="100" min="1" inputmode="numeric"></div>
+        <div id="upGift" hidden><select id="upGiftSel"></select></div>
+        <label>Orzu gifti (narxiga qarab shans hisoblanadi)</label>
+        <div class="market" id="upMarket"></div>
+        <button class="btn green" id="upGo">⬆️ Upgrade</button>
+        <p class="hint" id="upInfo">Orzu giftini tanlang</p>
+      </div>
+      <div id="upRes"></div>
     </section>
 
     <!-- ============ PLINKO ============ -->
