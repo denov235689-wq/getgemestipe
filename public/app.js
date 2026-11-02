@@ -90,7 +90,7 @@
 
   /* ============ Navigatsiya ============ */
   const loaders = {
-    rocket: () => loadRocket(), plinko: () => loadPlinko(), pvp: () => loadPvp(), mines: () => loadMines(), keys: () => loadKeys(),
+    rocket: () => loadRocket(), plinko: () => loadPlinko(), upgrade: () => loadUpgrade(), pvp: () => loadPvp(), mines: () => loadMines(), keys: () => loadKeys(),
     backpack: () => loadBackpack(), invite: () => loadInvite(), leaderboard: () => loadLb(), earn: () => loadEarn(), deposit: () => loadDeposit(),
   };
   function show(name) {
@@ -128,7 +128,7 @@
     const { gifts } = await api('/mygifts');
     const ok = gifts.filter((g) => g.status === 'owned' && g.value > 0);
     sel.innerHTML = ok.length
-      ? ok.map((g) => `<option value="${g.id}">${esc(g.name)} — ${fmtN(g.value)}⭐</option>`).join('')
+      ? ok.map((g) => `<option value="${g.id}" data-v="${g.value}">${esc(g.name)} — ${fmtN(g.value)}⭐</option>`).join('')
       : '<option value="">Gift yo\'q yoki narxi belgilanmagan</option>';
   }
   function setupSeg(prefix) {
@@ -140,7 +140,8 @@
       const gift = b.dataset.mode === 'gift';
       $(`#${prefix}Stars`).hidden = gift;
       $(`#${prefix}Gift`).hidden = !gift;
-      if (gift) fillGifts($(`#${prefix}GiftSel`)).catch(fail);
+      if (gift) fillGifts($(`#${prefix}GiftSel`)).then(() => { if (prefix === 'up') updateUpChance(); }).catch(fail);
+      else if (prefix === 'up') updateUpChance();
     };
   }
   function stakeBody(prefix) {
@@ -151,7 +152,7 @@
     }
     return { bet: Number($(`#${prefix}Bet`).value) };
   }
-  setupSeg('rk'); setupSeg('m'); setupSeg('pl');
+  setupSeg('rk'); setupSeg('m'); setupSeg('pl'); setupSeg('up');
   document.addEventListener('click', (e) => {
     const b = e.target.closest('.quick button');
     if (!b) return;
@@ -719,6 +720,8 @@
     const url = depInfo && depInfo.relayer_url;
     if (!url) return;
     try {
+      // PaxtaGram ichida profilni to'g'ridan-to'g'ri ochadi (brauzerga chiqmaydi)
+      if (tg && tg.openTelegramLink) { tg.openTelegramLink(url); return; }
       if (tg && tg.openLink) { tg.openLink(url); return; }
     } catch (e) { /* pastga */ }
     window.open(url, '_blank');
@@ -799,21 +802,84 @@
     h.payments.forEach((p) => rows.push({ t: p.created_at, html: `<div><span>➕ Deposit · ${fmtDate(p.created_at)}</span><span class="win">+${fmtN(p.amount)}⭐</span></div>` }));
     h.rocket.forEach((r) => rows.push({ t: r.created_at, html: `<div><span>🚀 Rocket ${fx(r.crash)}x · ${fmtDate(r.created_at)}</span><span class="${r.win ? 'win' : 'lose'}">${r.win ? '+' + fmtN(r.win) : '-' + fmtN(r.bet)}⭐</span></div>` }));
     h.mines.forEach((m) => rows.push({ t: m.created_at, html: `<div><span>💎 Mines · ${fmtDate(m.created_at)}</span><span class="${m.win ? 'win' : 'lose'}">${m.win ? '+' + fmtN(m.win) : '-' + fmtN(m.bet)}⭐</span></div>` }));
+    (h.upgrade || []).forEach((u) => rows.push({ t: u.created_at, html: `<div><span>⬆️ Upgrade ${esc(u.target)} (${fx(u.chance * 100)}%) · ${fmtDate(u.created_at)}</span><span class="${u.win ? 'win' : 'lose'}">${u.win ? '🎉 yutdi' : '-' + fmtN(u.stake) + '⭐'}</span></div>` }));
     (h.plinko || []).forEach((p) => rows.push({ t: p.created_at, html: `<div><span>🔮 Plinko ${fx(p.mult)}x · ${fmtDate(p.created_at)}</span><span class="${p.win >= p.bet ? 'win' : 'lose'}">${p.win >= p.bet ? '+' + fmtN(p.win - p.bet) : '-' + fmtN(p.bet - p.win)}⭐</span></div>` }));
     rows.sort((a, b) => b.t - a.t);
     $('#history').innerHTML = rows.length ? rows.slice(0, 25).map((r) => r.html).join('') : '<div>Tarix bo\'sh</div>';
   }
 
-  /* ============ PVP (duel) ============ */
+  /* ============ PVP (duel): og'irlikli shans + g'ildirak ============ */
+  const AVC = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#a855f7', '#14b8a6'];
+  function pvAv(p) {
+    if (p.bot) return '<span class="pva bot">🤖</span>';
+    const ini = esc((p.name || '?').trim().charAt(0).toUpperCase() || '?');
+    const col = AVC[Math.abs(Number(p.id) || 0) % AVC.length];
+    return `<span class="pva" style="background:${col}">${p.photo ? `<img src="${esc(p.photo)}" alt="" data-fb="${ini}">` : ini}</span>`;
+  }
+  let pvShowing = false;
   async function loadPvp() {
     const r = await api('/pvp');
-    $('#pvInfo').textContent = `Stavka: ${r.min_bet} – ${r.max_bet} ⭐ · Komissiya: ${r.fee}% · G'olib 50/50 tasodif bilan aniqlanadi`;
-    $('#pvOpen').innerHTML = r.open.length
-      ? r.open.map((d) => `<div><span>⚔️ ${esc(d.name)} · ${fmtN(d.stake)}⭐</span>${d.mine ? `<button class="red" data-pvc="${d.id}">Bekor</button>` : `<button data-pvj="${d.id}">Qo'shilish</button>`}</div>`).join('')
-      : '<div>Ochiq duel yo\'q. Birinchi bo\'lib yarating!</div>';
+    $('#pvInfo').textContent = `Stavka: ${r.min_bet} – ${r.max_bet} ⭐ · Komissiya: ${r.fee}%`;
+    const ae = document.activeElement;
+    const typing = ae && ae.classList && ae.classList.contains('pvin');
+    if (!typing) {
+      $('#pvOpen').innerHTML = r.open.length
+        ? r.open.map((d) => d.mine
+          ? `<div class="pvrow"><div class="pvhead">${pvAv({ id: me.id, name: me.first_name, photo: me.photo_url })}<div><b>Siz</b><small>Stavka: ⭐ ${fmtN(d.stake)}</small></div></div><div class="pvwait">⏳ Raqib kutilmoqda...</div><button class="red" data-pvc="${d.id}">Bekor qilish</button></div>`
+          : `<div class="pvrow" data-x="${d.stake}"><div class="pvhead">${pvAv({ id: d.id, name: d.name, photo: d.photo, bot: d.bot })}<div><b>${esc(d.name)}${d.bot ? ' <em class="botb">BOT</em>' : ''}</b><small>Stavka: ⭐ ${fmtN(d.stake)}</small></div></div><div class="pvjoin"><input class="pvin" type="number" value="${d.stake}" min="${r.min_bet}" max="${r.max_bet}" inputmode="numeric"><span class="pvch">Sizning shansingiz: ${Math.round((d.stake / (2 * d.stake)) * 1000) / 10}%</span><button data-pvj="${d.id}">Qo'shilish</button></div></div>`).join('')
+        : '<div class="pvrow"><small>Ochiq duel yo\'q. Birinchi bo\'lib yarating!</small></div>';
+    }
     $('#pvRecent').innerHTML = r.recent.length
-      ? r.recent.map((x) => `<div><span>${esc(x.a)} ⚔️ ${esc(x.b)}</span><span class="win">🏆 ${esc(x.w)} +${fmtN(x.payout)}⭐</span></div>`).join('')
+      ? r.recent.map((x) => `<div><span>${esc(x.a)} (${fmtN(x.stake)}) ⚔️ ${esc(x.b)} (${fmtN(x.opp)})</span><span class="win">🏆 ${esc(x.w)} +${fmtN(x.payout)}⭐</span></div>`).join('')
       : '<div>Hali o\'yin bo\'lmagan</div>';
+    if (r.finished && !pvShowing) showWheel(r.finished, true);
+  }
+  // Stavka yozilganda shans ko'rsatiladi
+  $('#pvOpen').addEventListener('input', (e) => {
+    const inp = e.target.closest('.pvin');
+    if (!inp) return;
+    const row = inp.closest('.pvrow');
+    const x = Number(row.dataset.x);
+    const y = Number(inp.value) || 0;
+    row.querySelector('.pvch').textContent = `Sizning shansingiz: ${y > 0 ? Math.round((y / (x + y)) * 1000) / 10 : 0}%`;
+  });
+  function showWheel(res, fromPoll) {
+    pvShowing = true;
+    const a = res.creator;
+    const b = res.opp;
+    const ang = a.pct * 3.6;
+    const lab = (p, mid) => `<div class="wlab" style="--ang:${mid}deg"><div class="wl">${pvAv(p)}<small>${p.pct}%</small></div></div>`;
+    modal(`<h3 style="text-align:center;margin-top:0">⚔️ Duel · bank ${fmtN(res.total)}⭐</h3>
+      <div class="whwrap"><i class="whptr"></i>
+        <div class="wheel" id="whl" style="background:conic-gradient(#3b82f6 0 ${ang}deg,#ef4444 ${ang}deg 360deg)">${lab(a, ang / 2)}${lab(b, ang + (360 - ang) / 2)}</div>
+        <div class="whhub">VS</div></div>
+      <div class="whinfo"><span style="color:#7db3ff">🔵 ${esc(a.name)}: ${fmtN(a.stake)}⭐ (${a.pct}%)</span><span style="color:#ff8f8f">🔴 ${esc(b.name)}: ${fmtN(b.stake)}⭐ (${b.pct}%)</span></div>
+      <div class="whres" id="whRes">G'ildirak aylanmoqda…</div>`);
+    const whl = $('#whl');
+    setTimeout(() => {
+      whl.style.transition = 'transform 5.2s cubic-bezier(.12,.67,.1,1)';
+      whl.style.transform = `rotate(${360 * 6 - res.roll * 360}deg)`;
+    }, 60);
+    let done = false;
+    let timer = 0;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      const win = res.winner_id === a.id ? a : b;
+      const resBox = $('#whRes');
+      if (resBox) resBox.innerHTML = res.won ? `🏆 Siz yutdingiz! <span style="color:#5dff9a">+${fmtN(res.payout)}⭐</span>` : `${esc(win.name)} yutdi: <span style="color:#5dff9a">+${fmtN(res.payout)}⭐</span>`;
+      if (res.balance != null) setBalance(res.balance); else refreshMe().catch(() => {});
+      if (tg && tg.HapticFeedback) { try { tg.HapticFeedback.notificationOccurred(res.won ? 'success' : 'warning'); } catch (e) { /* ignore */ } }
+      if (fromPoll) api(`/pvp/${res.id}/seen`, 'POST').catch(() => {});
+      pvShowing = false;
+      loadLive();
+      if (current === 'pvp') loadPvp().catch(() => {});
+    };
+    timer = setTimeout(finish, 5500);
+    const closeNow = () => { finish(); closeModal(); };
+    $('#mClose').onclick = closeNow;
+    $('#modal').onclick = (e) => { if (e.target === $('#modal')) closeNow(); };
   }
   $('#pvCreate').onclick = async () => {
     try {
@@ -828,17 +894,84 @@
     const c = e.target.closest('[data-pvc]');
     try {
       if (j) {
-        const r = await api(`/pvp/${j.dataset.pvj}/join`, 'POST');
-        setBalance(r.balance);
-        toast(r.won ? `🏆 Yutdingiz! +${fmtN(r.payout)}⭐` : `😔 Yutqazdingiz: -${fmtN(r.stake)}⭐`, !r.won);
-        loadLive();
+        const stake = Number(j.closest('.pvrow').querySelector('.pvin').value);
+        const r = await api(`/pvp/${j.dataset.pvj}/join`, 'POST', { stake });
+        setBalance(r.balance - (r.won ? r.payout : 0)); // natija g'ildirak tugagach ko'rsatiladi
+        showWheel(r, false);
       } else if (c) {
         const r = await api(`/pvp/${c.dataset.pvc}/cancel`, 'POST');
         setBalance(r.balance);
         toast('Duel bekor qilindi, stavka qaytdi');
-      } else return;
-      loadPvp();
+        loadPvp();
+      }
     } catch (err) { fail(err); loadPvp().catch(() => {}); }
+  };
+
+  /* ============ UPGRADE ============ */
+  const UP = { data: null, target: null, busy: false };
+  function upStakeValue() {
+    if (!$('#upGift').hidden) { const o = $('#upGiftSel').selectedOptions[0]; return o ? Number(o.dataset.v) || 0 : 0; }
+    return Number($('#upBet').value) || 0;
+  }
+  function upChance() {
+    const V = upStakeValue();
+    const T = UP.target ? UP.target.v : 0;
+    if (!T || !V || V >= T) return 0;
+    return Math.floor((V / T) * UP.data.rtp * 100) / 100;
+  }
+  function updateUpChance() {
+    if (!UP.data) return;
+    const V = upStakeValue();
+    const p = upChance();
+    $('#upWheel').style.setProperty('--p', p);
+    $('#upPct').textContent = `${Math.round(p * 10) / 10}%`;
+    $('#upCenter').innerHTML = UP.target ? gimg({ base_name: UP.target.n, image: UP.target.img }) : '🎁';
+    $('#upMarket').innerHTML = UP.data.catalog.map((c) => {
+      const ch = V && c.v > V ? Math.floor((V / c.v) * UP.data.rtp * 100) / 100 : 0;
+      return `<div class="mk${UP.target && UP.target.n === c.n ? ' sel' : ''}${c.v <= V ? ' dim' : ''}" data-up="${esc(c.n)}"><div class="lab">orzu</div>${gimg({ base_name: c.n, image: c.img })}<b>${esc(c.n)}</b><div class="pr">⭐ ${fmtN(c.v)}</div><div class="cn">${ch ? ch + '%' : '—'}</div></div>`;
+    }).join('') || '<div class="panel">Katalog bo\'sh</div>';
+    $('#upInfo').textContent = !UP.target ? 'Orzu giftini tanlang' : p < 1 ? 'Shans 1% dan past: qimmatroq stavka yoki arzonroq gift tanlang' : `Shans: ${Math.round(p * 10) / 10}% · yutsangiz ${esc(UP.target.n)} (${fmtN(UP.target.v)}⭐) olasiz`;
+  }
+  async function loadUpgrade() {
+    UP.data = await api('/upgrade');
+    if (UP.target) UP.target = UP.data.catalog.find((c) => c.n === UP.target.n) || null;
+    if (!$('#upGift').hidden) await fillGifts($('#upGiftSel'));
+    updateUpChance();
+  }
+  $('#upBet').oninput = updateUpChance;
+  $('#upGiftSel').onchange = updateUpChance;
+  $('#upMarket').onclick = (e) => {
+    const c = e.target.closest('[data-up]');
+    if (!c || c.classList.contains('dim') || UP.busy) return;
+    UP.target = UP.data.catalog.find((x) => x.n === c.dataset.up) || null;
+    updateUpChance();
+  };
+  $('#upGo').onclick = async () => {
+    if (UP.busy) return;
+    UP.busy = true;
+    $('#upGo').disabled = true;
+    try {
+      if (!UP.target) throw new Error('Avval orzu giftini tanlang');
+      const r = await api('/upgrade', 'POST', { ...stakeBody('up'), target: UP.target.n });
+      const wrap = $('#upArrowWrap');
+      wrap.style.transition = 'none';
+      wrap.style.transform = 'rotate(0deg)';
+      void wrap.offsetWidth;
+      wrap.style.transition = 'transform 4.5s cubic-bezier(.12,.67,.1,1)';
+      wrap.style.transform = `rotate(${360 * 5 + r.roll * 360}deg)`;
+      await sleep(4700);
+      setBalance(r.balance);
+      $('#upRes').innerHTML = r.win
+        ? `<div class="gifts"><div class="gcard">${gimg({ base_name: r.target.n, image: r.target.img })}<b>${esc(r.target.n)}</b><div class="gp">⭐ ${fmtN(r.target.v)}</div><span class="st">🎉 Inventarga qo'shildi</span></div></div>`
+        : `<div class="panel center">😔 Omad kelmadi (shans ${Math.round(r.chance * 1000) / 10}%). ${r.gift ? 'Gift adminga o\'tdi.' : ''}</div>`;
+      toast(r.win ? `🎉 Upgrade! ${r.target.n} sizniki` : '😔 Upgrade omadsiz', !r.win);
+      if (r.win && tg && tg.HapticFeedback) { try { tg.HapticFeedback.notificationOccurred('success'); } catch (e) { /* ignore */ } }
+      loadLive();
+      if (!$('#upGift').hidden) await fillGifts($('#upGiftSel'));
+      updateUpChance();
+    } catch (e) { fail(e); }
+    UP.busy = false;
+    $('#upGo').disabled = false;
   };
 
   /* ============ INVITE / LEADERBOARD ============ */
@@ -878,6 +1011,9 @@
     gift_to_balance: 'Gift kelsa: 1 = balansga avto, 0 = inventarga',
     gift_credit_pct: 'Gift sotilganda narxning necha % i beriladi',
     gift_withdraw_fee: 'Giftni chiqarish komissiyasi ⭐',
+    upgrade_rtp: 'Upgrade: o\'yinchiga qaytish % (RTP)',
+    pvp_bot: 'PVP: Epic bot (1 = yoqilgan, 0 = o\'chirilgan)',
+    pvp_bot_max: 'PVP: Epic bot maksimal stavkasi ⭐',
   };
   const ST_LABEL = { lost: 'yutqazilgan', sold: 'sotilgan/yutuqda', taken: 'olingan ✅' };
   async function loadAdmin() {
