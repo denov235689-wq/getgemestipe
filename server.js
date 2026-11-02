@@ -79,6 +79,10 @@ CREATE TABLE IF NOT EXISTS plinko_games(
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, bet INTEGER, rows INTEGER, risk TEXT,
   slot INTEGER, mult REAL, win INTEGER, gift_id INTEGER, created_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS upgrade_games(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stake INTEGER, target TEXT, target_value INTEGER,
+  chance REAL, roll REAL, win INTEGER, gift_id INTEGER, created_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS pvp_games(
   id INTEGER PRIMARY KEY AUTOINCREMENT, creator_id INTEGER, opponent_id INTEGER, stake INTEGER,
   status TEXT DEFAULT 'open', winner_id INTEGER, payout INTEGER DEFAULT 0, created_at INTEGER, finished_at INTEGER
@@ -94,10 +98,14 @@ addCol('mines_games', 'gift_id', 'INTEGER');
 ['model', 'backdrop', 'symbol', 'image'].forEach((c) => addCol('user_gifts', c, 'TEXT'));
 addCol('user_gifts', 'number', 'INTEGER');
 addCol('gift_values', 'image', 'TEXT');
+addCol('pvp_games', 'opp_stake', 'INTEGER');
+addCol('pvp_games', 'roll', 'REAL');
+addCol('pvp_games', 'is_bot', 'INTEGER DEFAULT 0');
+addCol('pvp_games', 'seen', 'INTEGER DEFAULT 1');
 
 const DEFAULTS = {
   rocket_rtp: '95', mines_rtp: '95', min_bet: '1', max_bet: '1000',
-  ref_bonus: '5', contest_prize: '100', pvp_fee: '5', gift_to_balance: '0', gift_credit_pct: '100', plinko_rtp: '95', gift_withdraw_fee: '150',
+  ref_bonus: '5', contest_prize: '100', pvp_fee: '5', gift_to_balance: '0', gift_credit_pct: '100', plinko_rtp: '95', gift_withdraw_fee: '150', pvp_bot: '1', pvp_bot_max: '100', upgrade_rtp: '95',
 };
 const insSetting = db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)');
 Object.entries(DEFAULTS).forEach(([k, v]) => insSetting.run(k, v));
@@ -354,7 +362,7 @@ app.get('/api/giftdeposit', auth, wrap(() => {
   const relayer = process.env.RELAYER_USERNAME || 'AVTOGIFT';
   return {
     relayer,
-    relayer_url: process.env.RELAYER_URL || `${INVITE_BASE}${relayer}`,
+    relayer_url: process.env.RELAYER_URL || `https://paxta.online/${relayer}`,
     to_balance: !!getS('gift_to_balance'),
     pct: getS('gift_credit_pct'),
     withdraw_fee: getS('gift_withdraw_fee'),
@@ -595,16 +603,49 @@ app.post('/api/mines/cashout', auth, wrap((req) => {
   return r;
 }));
 
-/* ---- PVP duel (1 ga 1, 50/50) ---- */
+/* ---- PVP duel: ko'p tikkanning shansi baland, g'ildirak bilan aniqlanadi ---- */
+const BOT_ID = -1;
+db.prepare('INSERT OR IGNORE INTO users(id,first_name,username,photo_url,balance,created_at) VALUES(?,?,?,?,0,?)').run(BOT_ID, 'Epic bot', 'epic_bot', '', now());
+
+// Epic bot har doim kamida 3 ta ochiq raundda o'zi stavka qo'yib turadi
+function ensureBotRounds() {
+  if (!getS('pvp_bot')) {
+    db.prepare("UPDATE pvp_games SET status='cancelled', finished_at=? WHERE creator_id=? AND status='open'").run(now(), BOT_ID);
+    return;
+  }
+  const have = db.prepare("SELECT COUNT(*) c FROM pvp_games WHERE creator_id=? AND status='open'").get(BOT_ID).c;
+  const min = getS('min_bet');
+  const max = Math.max(min, Math.min(getS('max_bet'), getS('pvp_bot_max')));
+  const ins = db.prepare('INSERT INTO pvp_games(creator_id,stake,created_at,is_bot,seen) VALUES(?,?,?,1,1)');
+  for (let i = have; i < 3; i++) ins.run(BOT_ID, min + crypto.randomInt(0, max - min + 1), now());
+}
+ensureBotRounds();
+
+function pvpResult(g, viewerId) {
+  const u = (id) => db.prepare('SELECT id, first_name n, photo_url p FROM users WHERE id=?').get(id) || { id, n: '?', p: '' };
+  const a = u(g.creator_id);
+  const b = u(g.opponent_id);
+  const total = g.stake + g.opp_stake;
+  const pct = (x) => Math.round((x / total) * 1000) / 10;
+  return {
+    id: g.id, roll: g.roll, winner_id: g.winner_id, payout: g.payout, total,
+    creator: { id: a.id, name: a.n, photo: a.p, bot: a.id === BOT_ID, stake: g.stake, pct: pct(g.stake) },
+    opp: { id: b.id, name: b.n, photo: b.p, bot: b.id === BOT_ID, stake: g.opp_stake, pct: pct(g.opp_stake) },
+    won: g.winner_id === viewerId,
+  };
+}
+
 app.get('/api/pvp', auth, wrap((req) => {
-  const open = db.prepare(`SELECT p.id, p.stake, p.creator_id, u.first_name n FROM pvp_games p
-    JOIN users u ON u.id=p.creator_id WHERE p.status='open' ORDER BY p.id DESC LIMIT 30`).all()
-    .map((x) => ({ id: x.id, stake: x.stake, name: x.n, mine: x.creator_id === req.user.id }));
-  const recent = db.prepare(`SELECT p.stake, p.payout, u1.first_name a, u2.first_name b, uw.first_name w FROM pvp_games p
+  ensureBotRounds();
+  const open = db.prepare(`SELECT p.id, p.stake, p.creator_id, p.is_bot, u.first_name n, u.photo_url ph FROM pvp_games p
+    JOIN users u ON u.id=p.creator_id WHERE p.status='open' ORDER BY p.is_bot DESC, p.id DESC LIMIT 30`).all()
+    .map((x) => ({ id: x.id, stake: x.stake, name: x.n, photo: x.ph, bot: !!x.is_bot, mine: x.creator_id === req.user.id }));
+  const recent = db.prepare(`SELECT p.stake, COALESCE(p.opp_stake, p.stake) opp, p.payout, u1.first_name a, u2.first_name b, uw.first_name w FROM pvp_games p
     JOIN users u1 ON u1.id=p.creator_id JOIN users u2 ON u2.id=p.opponent_id JOIN users uw ON uw.id=p.winner_id
     WHERE p.status='done' ORDER BY p.id DESC LIMIT 10`).all();
+  const fin = db.prepare("SELECT * FROM pvp_games WHERE creator_id=? AND status='done' AND seen=0 ORDER BY id LIMIT 1").get(req.user.id);
   const s = allS();
-  return { open, recent, fee: s.pvp_fee, min_bet: s.min_bet, max_bet: s.max_bet };
+  return { open, recent, finished: fin ? pvpResult(fin, req.user.id) : null, fee: s.pvp_fee, min_bet: s.min_bet, max_bet: s.max_bet };
 }));
 
 app.post('/api/pvp/create', auth, wrap((req) => {
@@ -631,26 +672,80 @@ app.post('/api/pvp/:id/cancel', auth, wrap((req) => {
   })();
 }));
 
+app.post('/api/pvp/:id/seen', auth, wrap((req) => {
+  db.prepare('UPDATE pvp_games SET seen=1 WHERE id=? AND creator_id=?').run(Number(req.params.id), req.user.id);
+}));
+
 app.post('/api/pvp/:id/join', auth, wrap((req) => {
   const uid = req.user.id;
   const id = Number(req.params.id);
-  const r = db.transaction(() => {
+  const row = db.transaction(() => {
     const g = db.prepare("SELECT * FROM pvp_games WHERE id=? AND status='open'").get(id);
     if (!g) fail('Duel topilmadi yoki allaqachon boshlangan', 404);
     if (g.creator_id === uid) fail('O\'zingizning duelingizga qo\'shila olmaysiz');
-    if (getBal(uid) < g.stake) fail('Balans yetarli emas');
-    addBal(uid, -g.stake);
-    const winner = crypto.randomInt(0, 2) === 0 ? g.creator_id : uid;
-    const payout = Math.floor(g.stake * 2 * (1 - getS('pvp_fee') / 100));
-    addBal(winner, payout);
-    db.prepare("UPDATE pvp_games SET status='done', opponent_id=?, winner_id=?, payout=?, finished_at=? WHERE id=?").run(uid, winner, payout, now(), id);
-    addScore(g.creator_id, g.stake);
-    addScore(uid, g.stake);
-    return { g, winner, payout };
+    const mine = req.body.stake === undefined || req.body.stake === '' ? g.stake : parseBet(req.body.stake);
+    if (getBal(uid) < mine) fail('Balans yetarli emas');
+    addBal(uid, -mine);
+    const total = g.stake + mine;
+    const roll = crypto.randomInt(0, 1e9) / 1e9;
+    const winner = roll < g.stake / total ? g.creator_id : uid; // ko'p tikkanning shansi baland
+    const payout = Math.floor(total * (1 - getS('pvp_fee') / 100));
+    if (winner !== BOT_ID) addBal(winner, payout);
+    db.prepare("UPDATE pvp_games SET status='done', opponent_id=?, opp_stake=?, winner_id=?, payout=?, roll=?, finished_at=?, seen=? WHERE id=?")
+      .run(uid, mine, winner, payout, roll, now(), g.is_bot ? 1 : 0, id);
+    if (g.creator_id !== BOT_ID) addScore(g.creator_id, g.stake);
+    addScore(uid, mine);
+    return db.prepare('SELECT * FROM pvp_games WHERE id=?').get(id);
   })();
-  const won = r.winner === uid;
-  tell(r.g.creator_id, won ? `⚔️ PVP: duelingizga qo'shilishdi va siz yutqazdingiz (-${r.g.stake}⭐).` : `🏆 PVP: duelingizda yutdingiz! +${r.payout}⭐`);
-  return { won, payout: r.payout, stake: r.g.stake, balance: getBal(uid) };
+  ensureBotRounds();
+  const res = pvpResult(row, uid);
+  if (row.creator_id !== BOT_ID) {
+    const who = req.user.username ? '@' + req.user.username : req.user.first_name;
+    tell(row.creator_id, `⚔️ PVP: ${who} duelingizga ${res.opp.stake}⭐ bilan qo'shildi (sizning shansingiz ${res.creator.pct}%).\n` +
+      (row.winner_id === row.creator_id ? `🏆 Siz yutdingiz! +${row.payout}⭐` : `😔 Siz yutqazdingiz (-${row.stake}⭐).`));
+  }
+  return { ...res, balance: getBal(uid), fee: getS('pvp_fee') };
+}));
+
+/* ---- UPGRADE: gift/Stars bilan qimmatroq giftga aylantirish ---- */
+const upgradeCatalog = () => db.prepare("SELECT base_name n, value v, COALESCE(image,'') img FROM gift_values WHERE value>0 ORDER BY value ASC").all();
+app.get('/api/upgrade', auth, wrap(() => ({ rtp: getS('upgrade_rtp'), catalog: upgradeCatalog() })));
+app.post('/api/upgrade', auth, wrap((req) => {
+  const uid = req.user.id;
+  const tname = String(req.body.target || '');
+  const giftId = Number(req.body.gift_id) || 0;
+  const bet = giftId ? 0 : parseBet(req.body.bet);
+  const out = db.transaction(() => {
+    const t = db.prepare("SELECT base_name n, value v, COALESCE(image,'') img FROM gift_values WHERE lower(base_name)=lower(?) AND value>0").get(tname);
+    if (!t) fail('Orzu gifti topilmadi', 404);
+    let stake = bet;
+    let gid = null;
+    if (giftId) { const g = lockGift(uid, giftId); stake = g.value; gid = g.id; }
+    else { if (getBal(uid) < bet) fail('Balans yetarli emas'); addBal(uid, -bet); }
+    if (stake >= t.v) fail('Orzu gifti stavkadan qimmatroq bo\'lishi kerak');
+    const chance = Math.floor((stake / t.v) * getS('upgrade_rtp') * 100) / 10000;
+    if (chance < 0.01) fail('Shans 1% dan past. Qimmatroq stavka yoki arzonroq gift tanlang');
+    const roll = crypto.randomInt(0, 1e9) / 1e9;
+    const win = roll < chance;
+    let lostGift = null;
+    if (gid) {
+      if (win) db.prepare("UPDATE user_gifts SET status='sold', lost_at=? WHERE id=?").run(now(), gid);
+      else { db.prepare("UPDATE user_gifts SET status='lost', lost_at=? WHERE id=?").run(now(), gid); lostGift = giftOf(gid); }
+    }
+    let newId = null;
+    if (win) {
+      newId = db.prepare('INSERT INTO user_gifts(owner_id,owned_gift_id,connection_id,base_name,name,value,status,created_at,image) VALUES(?,?,?,?,?,?,?,?,?)')
+        .run(uid, '', '', t.n, t.n, t.v, 'owned', now(), t.img).lastInsertRowid;
+    }
+    addScore(uid, stake);
+    db.prepare('INSERT INTO upgrade_games(user_id,stake,target,target_value,chance,roll,win,gift_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
+      .run(uid, stake, t.n, t.v, chance, roll, win ? 1 : 0, gid, now());
+    return { win, chance, roll, target: t, gift: !!gid, new_gift_id: newId, lostGift };
+  })();
+  if (out.lostGift) { notifyLost(out.lostGift, uid); delete out.lostGift; }
+  if (out.win) ADMIN_IDS.forEach((a) => tell(a, `⬆️ Upgrade yutuq: ID ${uid} → ${out.target.n} (${out.target.v}⭐). Jismoniy chiqarish kerak bo'lsa, qo'lda yuboring.`));
+  out.balance = getBal(uid);
+  return out;
 }));
 
 /* ---- PLINKO ---- */
@@ -723,6 +818,7 @@ app.get('/api/history', auth, wrap((req) => {
   return {
     payments: db.prepare('SELECT amount, created_at FROM payments WHERE user_id=? ORDER BY id DESC LIMIT 15').all(uid),
     rocket: db.prepare("SELECT bet,target,crash,win,created_at FROM rocket_bets WHERE user_id=? AND status='done' ORDER BY id DESC LIMIT 10").all(uid),
+    upgrade: db.prepare('SELECT stake,target,chance,win,created_at FROM upgrade_games WHERE user_id=? ORDER BY id DESC LIMIT 10').all(uid),
     plinko: db.prepare('SELECT bet,rows,risk,mult,win,created_at FROM plinko_games WHERE user_id=? ORDER BY id DESC LIMIT 10').all(uid),
     mines: db.prepare("SELECT bet,mines_count,win,status,created_at FROM mines_games WHERE user_id=? AND status!='active' ORDER BY id DESC LIMIT 10").all(uid),
   };
@@ -756,7 +852,7 @@ ADMIN.get('/data', wrap(() => {
     gifts: db.prepare('SELECT * FROM gifts ORDER BY id').all(),
     contest: db.prepare(`SELECT u.id uid, u.first_name n, u.username un, c.score s FROM contest_scores c
       JOIN users u ON u.id=c.user_id ORDER BY c.score DESC LIMIT 10`).all(),
-    users: db.prepare('SELECT COUNT(*) c FROM users').get().c,
+    users: db.prepare('SELECT COUNT(*) c FROM users WHERE id>0').get().c,
     gift_types: db.prepare(`SELECT v.base_name b, v.value v, COALESCE(v.image,'') img,
       (SELECT COUNT(*) FROM user_gifts g WHERE g.base_name=v.base_name) c FROM gift_values v ORDER BY v.value`).all(),
     lost: db.prepare(`SELECT g.id, g.name, g.value, g.lost_at, g.status, u.first_name n FROM user_gifts g
@@ -771,13 +867,15 @@ ADMIN.post('/settings', wrap((req) => {
     if (!(k in b)) continue;
     const v = Number(b[k]);
     if (!Number.isFinite(v) || v < 0) fail(`${k} noto'g'ri`);
-    if (['rocket_rtp', 'mines_rtp', 'plinko_rtp'].includes(k) && (v < 1 || v > 100)) fail('RTP 1 dan 100 gacha bo\'lsin');
+    if (['rocket_rtp', 'mines_rtp', 'plinko_rtp', 'upgrade_rtp'].includes(k) && (v < 1 || v > 100)) fail('RTP 1 dan 100 gacha bo\'lsin');
+    if (k === 'pvp_bot_max' && (!Number.isInteger(v) || v < 1)) fail('Bot stavkasi butun son (>=1) bo\'lsin');
     if (k === 'gift_withdraw_fee' && !Number.isInteger(v)) fail('Chiqarish komissiyasi butun son bo\'lsin');
     if ((k === 'min_bet' || k === 'max_bet') && (!Number.isInteger(v) || v < 1)) fail('Stavka butun son (>=1) bo\'lsin');
     cur[k] = v;
   }
   if (cur.pvp_fee > 50) fail('PVP komissiya 50% dan oshmasin');
   if (cur.gift_to_balance !== 0 && cur.gift_to_balance !== 1) fail('gift_to_balance 0 yoki 1 bo\'lsin');
+  if (cur.pvp_bot !== 0 && cur.pvp_bot !== 1) fail('pvp_bot 0 yoki 1 bo\'lsin');
   if (cur.gift_credit_pct < 1 || cur.gift_credit_pct > 100) fail('Gift foizi 1 dan 100 gacha bo\'lsin');
   if (cur.min_bet > cur.max_bet) fail('Minimal stavka maksimaldan katta bo\'lmasin');
   const up = db.prepare('UPDATE settings SET value=? WHERE key=?');
