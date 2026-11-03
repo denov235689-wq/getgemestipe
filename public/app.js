@@ -9,6 +9,8 @@
   const $$ = (s) => [...document.querySelectorAll(s)];
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const fmtN = (n) => Number(n || 0).toLocaleString('en-US');
+  const fmtMax = (v) => (Number(v) >= 1e9 ? 'cheksiz' : fmtN(v));
+  const normN = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const fx = (m) => { m = Number(m); return m >= 100 ? m.toFixed(0) : m >= 10 ? m.toFixed(1) : m.toFixed(2); };
   const fmtDate = (t) => new Date(t * 1000).toLocaleString('uz-UZ', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -55,6 +57,7 @@
   let minesGame = null;
   let minesBusy = false;
   let pvTimer = 0;
+  let pvTimer2 = 0;
   let depTimer = 0;
   let current = 'home';
 
@@ -72,7 +75,7 @@
   async function refreshMe() { setMe(await api('/me')); }
 
   /* ============ Gift yordamchilari ============ */
-  const GE = { 'b-day candle': '🎂', 'lol pop': '🍭', 'star notepad': '📓', 'precious peach': '🍑', 'scared cat': '🐱', 'swiss watch': '⌚' };
+  const GE = { 'b-day candle': '🕯️', 'lol pop': '🍭', 'star notepad': '📓', 'precious peach': '🍑', 'scared cat': '🐱', 'swiss watch': '⌚', 'maple leaf': '🍁', 'money tree': '💰', 'cake': '🎂', 'mask': '🎭', 'resistance dog': '🐕' };
   const giftEmoji = (n) => GE[String(n || '').toLowerCase()] || '🎁';
   function gimg(g) {
     const e = giftEmoji(g.base_name || g.n || g.name);
@@ -102,8 +105,9 @@
     if (prev === 'rocket' && name !== 'rocket') rsRun(false);
     if (prev === 'plinko' && name !== 'plinko') { plFlush(); plRun(false); }
     clearInterval(pvTimer);
+    clearInterval(pvTimer2);
     clearInterval(depTimer);
-    if (name === 'pvp') pvTimer = setInterval(() => loadPvp().catch(() => {}), 4000);
+    if (name === 'pvp') { pvTimer = setInterval(() => loadPvp().catch(() => {}), 1000); pvTimer2 = setInterval(() => pvHubUpdate(), 250); }
     if (name === 'deposit') depTimer = setInterval(() => pollDepGifts().catch(() => {}), 4000);
     if (loaders[name]) loaders[name]().catch(fail);
   }
@@ -384,7 +388,7 @@
     rsSetup();
     rsRun(true);
     const r = await api('/rocket');
-    $('#rkInfo').textContent = `Stavka: ${r.min_bet} – ${r.max_bet} ⭐ · Avto yechish: ${r.min_target}x – ${r.max_target}x`;
+    $('#rkInfo').textContent = `Stavka: ${fmtN(r.min_bet)} – ${fmtMax(r.max_bet)} ⭐ · Avto yechish: ${r.min_target}x – ${r.max_target}x`;
     const s = await api('/rocket/state');
     if (s.status === 'active') rkStart(s);
     else if (s.status === 'won' || s.status === 'lost') rkFinish(s);
@@ -536,7 +540,7 @@
     }
     plResize();
     plRun(true);
-    $('#plInfo').textContent = `Stavka: ${PL.data.min_bet} – ${PL.data.max_bet} ⭐`;
+    $('#plInfo').textContent = `Stavka: ${fmtN(PL.data.min_bet)} – ${fmtMax(PL.data.max_bet)} ⭐`;
   }
   $('#plRows').onchange = () => { PL.rows = Number($('#plRows').value); plLayout(); };
   $('#plRisk').onclick = (e) => {
@@ -609,7 +613,7 @@
     minesGame = me.mines_active;
     buildGrid();
     renderMines();
-    $('#mMsg').textContent = `Stavka: ${me.min_bet} – ${me.max_bet} ⭐`;
+    $('#mMsg').textContent = `Stavka: ${fmtN(me.min_bet)} – ${fmtMax(me.max_bet)} ⭐`;
     if (!$('#mGift').hidden) fillGifts($('#mGiftSel')).catch(() => {});
   }
   $('#mStart').onclick = async () => {
@@ -648,36 +652,91 @@
     minesBusy = false;
   };
 
-  /* ============ KEYS ============ */
+  /* ============ KEYS (ruletka) ============ */
+  const hms = (s) => { s = Math.max(0, Math.floor(s)); return [Math.floor(s / 3600), Math.floor((s % 3600) / 60), s % 60].map((x) => String(x).padStart(2, '0')).join(':'); };
+  let keyTick = 0;
+  const rewImg = (it) => (it.gift ? gimg({ base_name: it.name, image: it.image }) : '<div class="gimg">⭐</div>');
   async function loadKeys() {
     const { keys } = await api('/keys');
     const box = $('#keysList');
     box.innerHTML = keys.length
-      ? keys.map((k) => `<div class="kcard" data-key="${k.id}"><div class="e">${esc(k.emoji)}</div><b>${esc(k.name)}</b><small>${fmtN(k.price)} ⭐</small></div>`).join('')
+      ? keys.map((k, i) => {
+        const free = k.cooldown_hours > 0;
+        const tag = free
+          ? (k.free_in > 0 ? `<small class="kfree wait" data-kin="${k.free_in}">⏳ ${hms(k.free_in)}</small>` : '<small class="kfree">BEPUL · OCHISH</small>')
+          : `<small>⭐ ${fmtN(k.price)}</small>`;
+        return `<div class="kcard k${i % 4}${free ? ' freekey' : ''}" data-key="${k.id}"><div class="kglow"></div><div class="e">${esc(k.emoji)}</div><b>${esc(k.name)}</b>${tag}</div>`;
+      }).join('')
       : '<div class="panel center">Hozircha keys yo\'q</div>';
     box.onclick = (e) => {
       const el = e.target.closest('.kcard');
       if (!el) return;
       openKeyModal(keys.find((k) => k.id === Number(el.dataset.key)));
     };
+    clearInterval(keyTick);
+    keyTick = setInterval(() => {
+      if (current !== 'keys') { clearInterval(keyTick); return; }
+      let reload = false;
+      $$('.kfree.wait').forEach((el) => {
+        const v = Number(el.dataset.kin) - 1;
+        el.dataset.kin = v;
+        if (v <= 0) reload = true; else el.textContent = '⏳ ' + hms(v);
+      });
+      if (reload) loadKeys().catch(() => {});
+    }, 1000);
   }
   function openKeyModal(k) {
     if (!k) return;
-    const rw = k.rewards.map((r) => `<div class="rwi"><span>${esc(r.name)}</span><b>${fmtN(r.value)} ⭐</b></div>`).join('');
-    modal(`<h3>${esc(k.emoji)} ${esc(k.name)}</h3>${rw}<div class="kres" id="kRes">❓</div><button class="btn green" id="kOpen">Ochish — ${fmtN(k.price)} ⭐</button>`);
+    const free = k.cooldown_hours > 0;
+    const items = k.rewards.map((r) => `<div class="ki">${rewImg(r)}<b>${esc(r.name)}</b><div class="pr">⭐ ${fmtN(r.value)}</div></div>`).join('');
+    const label = () => (free ? (k.free_in > 0 ? `⏳ ${hms(k.free_in)}` : '🎁 Bepul ochish') : `Ochish — ⭐ ${fmtN(k.price)}`);
+    modal(`<h3 style="margin-top:0">${esc(k.emoji)} ${esc(k.name)}</h3>
+      <div class="kitems">${items}</div>
+      <div class="roul" id="kRoul" hidden><div class="rmark"></div><div class="rstrip" id="kStrip"></div></div>
+      <div class="kres" id="kRes"></div>
+      <button class="btn green" id="kOpen"${free && k.free_in > 0 ? ' disabled' : ''}>${label()}</button>`);
     $('#kOpen').onclick = async () => {
       const btn = $('#kOpen');
       btn.disabled = true;
       try {
         const r = await api(`/keys/${k.id}/open`, 'POST');
-        for (let i = 0; i < 14; i++) {
-          $('#kRes').textContent = k.rewards[Math.floor(Math.random() * k.rewards.length)].name;
-          await sleep(70 + i * 12);
-        }
-        $('#kRes').innerHTML = `🎉 ${esc(r.reward.name)}<br>+${fmtN(r.reward.value)} ⭐`;
+        $('#kRes').innerHTML = '';
+        setBalance(r.balance - (r.reward.gift ? 0 : r.reward.value));
+        const N = 46;
+        const STOP = 38;
+        const cell = (it) => `<div class="ri">${rewImg(it)}<b>${esc(it.name)}</b><small>⭐ ${fmtN(it.value)}</small></div>`;
+        $('#kStrip').innerHTML = Array.from({ length: N }, (_, i) => cell(i === STOP ? r.reward : k.rewards[Math.floor(Math.random() * k.rewards.length)])).join('');
+        $('#kRoul').hidden = false;
+        const vw = $('#kRoul').clientWidth || 320;
+        const offset = STOP * 100 + 46 - vw / 2 + rand(-28, 28);
+        const strip = $('#kStrip');
+        strip.style.transition = 'none';
+        strip.style.transform = 'translateX(0px)';
+        void strip.offsetWidth;
+        strip.style.transition = 'transform 5.5s cubic-bezier(.08,.6,.12,1)';
+        strip.style.transform = `translateX(${-offset}px)`;
+        await sleep(5700);
         setBalance(r.balance);
-      } catch (e) { fail(e); }
-      btn.disabled = false;
+        k.free_in = r.free_in;
+        if (r.reward.gift) {
+          const info = await api('/giftdeposit');
+          const credit = Math.floor((r.reward.value * info.pct) / 100);
+          $('#kRes').innerHTML = `<div class="gcard">${rewImg(r.reward)}<b>🎉 ${esc(r.reward.name)}</b><div class="gp">⭐ ${fmtN(r.reward.value)}</div><div class="gbtn"><button class="s" id="kSell">Sotish +${fmtN(credit)}⭐</button><button id="kWd">Chiqarish ${fmtN(info.withdraw_fee)}⭐</button></div></div>`;
+          $('#kSell').onclick = async () => {
+            try { const s = await api(`/mygifts/${r.gift_id}/sell`, 'POST'); setBalance(s.balance); toast(`💰 Sotildi: +${fmtN(s.credit)}⭐`); $('#kRes').innerHTML = '<div class="gcard"><b>Sotildi ✅</b></div>'; } catch (e) { fail(e); }
+          };
+          $('#kWd').onclick = async () => {
+            if (!confirm(`${r.reward.name} ni hisobingizga chiqarasizmi? Komissiya: ${fmtN(info.withdraw_fee)}⭐`)) return;
+            try { const w = await api(`/mygifts/${r.gift_id}/withdraw`, 'POST'); setBalance(w.balance); toast('📤 Gift hisobingizga yuborildi'); $('#kRes').innerHTML = '<div class="gcard"><b>Yuborildi ✅</b></div>'; } catch (e) { fail(e); }
+          };
+        } else {
+          $('#kRes').innerHTML = `<div class="gcard"><b>🎉 ${esc(r.reward.name)}</b><div class="gp">+${fmtN(r.reward.value)} ⭐</div></div>`;
+        }
+        loadLive();
+        loadKeys().catch(() => {});
+        btn.textContent = label();
+        btn.disabled = free;
+      } catch (e) { fail(e); btn.disabled = false; }
     };
   }
 
@@ -808,103 +867,133 @@
     $('#history').innerHTML = rows.length ? rows.slice(0, 25).map((r) => r.html).join('') : '<div>Tarix bo\'sh</div>';
   }
 
-  /* ============ PVP (duel): og'irlikli shans + g'ildirak ============ */
-  const AVC = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#a855f7', '#14b8a6'];
-  function pvAv(p) {
-    if (p.bot) return '<span class="pva bot">🤖</span>';
+  /* ============ PVP duel xonasi ============ */
+  const PVC = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#a855f7', '#14b8a6', '#ec4899', '#84cc16'];
+  const pv = { data: null, skew: 0, anim: false, playedId: 0, hash: '' };
+  function pvAv(p, i) {
+    const col = PVC[i % PVC.length];
+    if (p.bot) return `<span class="pva bot" style="border-color:${col}">🤖</span>`;
     const ini = esc((p.name || '?').trim().charAt(0).toUpperCase() || '?');
-    const col = AVC[Math.abs(Number(p.id) || 0) % AVC.length];
-    return `<span class="pva" style="background:${col}">${p.photo ? `<img src="${esc(p.photo)}" alt="" data-fb="${ini}">` : ini}</span>`;
+    return `<span class="pva" style="border-color:${col};background:${col}33">${p.photo ? `<img src="${esc(p.photo)}" alt="" data-fb="${ini}">` : ini}</span>`;
   }
-  let pvShowing = false;
+  function pvWheel(players) {
+    let a = 0;
+    const parts = players.map((p, i) => { const s = a; a = i === players.length - 1 ? 360 : a + p.pct * 3.6; return `${PVC[i % PVC.length]} ${s}deg ${a}deg`; });
+    $('#pvWheel').style.background = parts.length ? `conic-gradient(${parts.join(',')})` : '#2a2d3a';
+    a = 0;
+    $('#pvLabs').innerHTML = players.map((p) => {
+      const span = p.pct * 3.6;
+      const m = a + span / 2;
+      a += span;
+      return span < 20 ? '' : `<div class="pvlab" style="--ang:${m}deg"><div>${p.pct}%</div></div>`;
+    }).join('');
+  }
+  function pvList(players, winnerId) {
+    $('#pvCnt').textContent = players.length;
+    $('#pvPlayers').innerHTML = players.length
+      ? players.map((p, i) => `<div class="pvp${winnerId === p.id ? ' win' : ''}">${pvAv(p, i)}<div class="pvn"><b style="color:${PVC[i % PVC.length]}">${esc(p.name)}${p.bot ? ' <em class="botb">BOT</em>' : ''}</b><small>${p.pct}%</small></div><b class="pvs">${fmtN(p.stake)} ⭐</b></div>`).join('')
+      : '<div class="pvp"><small>Hozircha o\'yinchi yo\'q</small></div>';
+  }
+  const pvShortHash = (hh) => hh.slice(0, 4) + '…' + hh.slice(-4);
+  function pvLeft() {
+    const r = pv.data && pv.data.round;
+    if (!r || r.status !== 'countdown') return null;
+    return Math.max(0, Math.ceil((r.start_at - (Date.now() + pv.skew)) / 1000));
+  }
+  function pvHubUpdate() {
+    if (pv.anim || !pv.data) return;
+    const l = pvLeft();
+    const r = pv.data.round;
+    $('#pvHubTxt').textContent = l !== null ? l : (r.players.length < 2 ? '⏳' : 'VS');
+    $('#pvInfo').textContent = l !== null ? `O'yin ${l} soniyadan keyin boshlanadi` : 'Raqib kutilmoqda…';
+  }
+  function pvChance() {
+    const rd = pv.data && pv.data.round;
+    if (!rd || !me) return;
+    const y = Number($('#pvBet').value) || 0;
+    const mine = rd.players.find((p) => p.id === me.id);
+    const my = (mine ? mine.stake : 0) + y;
+    const tot = rd.total + y;
+    $('#pvChance').textContent = y > 0 && tot > 0 ? `Sizning shansingiz: ${Math.round((my / tot) * 1000) / 10}%` : '';
+  }
+  function pvRender(r) {
+    const rd = r.round;
+    pvWheel(rd.players);
+    pvList(rd.players, null);
+    pv.hash = rd.hash;
+    $('#pvHash').textContent = pvShortHash(rd.hash);
+    $('#pvId').textContent = '#' + rd.id;
+    $('#pvTop').textContent = r.top ? `${r.top.n} · ${fmtN(r.top.p)}⭐` : '—';
+    $('#pvLast').textContent = r.last ? `${r.last.winner.name} · ${fmtN(r.last.payout)}⭐` : '—';
+    const mine = rd.players.find((p) => p.id === me.id);
+    $('#pvCancel').hidden = !(mine && rd.status === 'waiting');
+    pvChance();
+    pvHubUpdate();
+  }
   async function loadPvp() {
     const r = await api('/pvp');
-    $('#pvInfo').textContent = `Stavka: ${r.min_bet} – ${r.max_bet} ⭐ · Komissiya: ${r.fee}%`;
-    const ae = document.activeElement;
-    const typing = ae && ae.classList && ae.classList.contains('pvin');
-    if (!typing) {
-      $('#pvOpen').innerHTML = r.open.length
-        ? r.open.map((d) => d.mine
-          ? `<div class="pvrow"><div class="pvhead">${pvAv({ id: me.id, name: me.first_name, photo: me.photo_url })}<div><b>Siz</b><small>Stavka: ⭐ ${fmtN(d.stake)}</small></div></div><div class="pvwait">⏳ Raqib kutilmoqda...</div><button class="red" data-pvc="${d.id}">Bekor qilish</button></div>`
-          : `<div class="pvrow" data-x="${d.stake}"><div class="pvhead">${pvAv({ id: d.id, name: d.name, photo: d.photo, bot: d.bot })}<div><b>${esc(d.name)}${d.bot ? ' <em class="botb">BOT</em>' : ''}</b><small>Stavka: ⭐ ${fmtN(d.stake)}</small></div></div><div class="pvjoin"><input class="pvin" type="number" value="${d.stake}" min="${r.min_bet}" max="${r.max_bet}" inputmode="numeric"><span class="pvch">Sizning shansingiz: ${Math.round((d.stake / (2 * d.stake)) * 1000) / 10}%</span><button data-pvj="${d.id}">Qo'shilish</button></div></div>`).join('')
-        : '<div class="pvrow"><small>Ochiq duel yo\'q. Birinchi bo\'lib yarating!</small></div>';
-    }
-    $('#pvRecent').innerHTML = r.recent.length
-      ? r.recent.map((x) => `<div><span>${esc(x.a)} (${fmtN(x.stake)}) ⚔️ ${esc(x.b)} (${fmtN(x.opp)})</span><span class="win">🏆 ${esc(x.w)} +${fmtN(x.payout)}⭐</span></div>`).join('')
-      : '<div>Hali o\'yin bo\'lmagan</div>';
-    if (r.finished && !pvShowing) showWheel(r.finished, true);
+    pv.data = r;
+    pv.skew = r.now - Date.now();
+    $('#pvBet').min = r.min_bet;
+    if (r.play && r.play.id !== pv.playedId && !pv.anim) { pv.playedId = r.play.id; pvSpin(r.play); return; }
+    if (!pv.anim) pvRender(r);
   }
-  // Stavka yozilganda shans ko'rsatiladi
-  $('#pvOpen').addEventListener('input', (e) => {
-    const inp = e.target.closest('.pvin');
-    if (!inp) return;
-    const row = inp.closest('.pvrow');
-    const x = Number(row.dataset.x);
-    const y = Number(inp.value) || 0;
-    row.querySelector('.pvch').textContent = `Sizning shansingiz: ${y > 0 ? Math.round((y / (x + y)) * 1000) / 10 : 0}%`;
-  });
-  function showWheel(res, fromPoll) {
-    pvShowing = true;
-    const a = res.creator;
-    const b = res.opp;
-    const ang = a.pct * 3.6;
-    const lab = (p, mid) => `<div class="wlab" style="--ang:${mid}deg"><div class="wl">${pvAv(p)}<small>${p.pct}%</small></div></div>`;
-    modal(`<h3 style="text-align:center;margin-top:0">⚔️ Duel · bank ${fmtN(res.total)}⭐</h3>
-      <div class="whwrap"><i class="whptr"></i>
-        <div class="wheel" id="whl" style="background:conic-gradient(#3b82f6 0 ${ang}deg,#ef4444 ${ang}deg 360deg)">${lab(a, ang / 2)}${lab(b, ang + (360 - ang) / 2)}</div>
-        <div class="whhub">VS</div></div>
-      <div class="whinfo"><span style="color:#7db3ff">🔵 ${esc(a.name)}: ${fmtN(a.stake)}⭐ (${a.pct}%)</span><span style="color:#ff8f8f">🔴 ${esc(b.name)}: ${fmtN(b.stake)}⭐ (${b.pct}%)</span></div>
-      <div class="whres" id="whRes">G'ildirak aylanmoqda…</div>`);
-    const whl = $('#whl');
-    setTimeout(() => {
-      whl.style.transition = 'transform 5.2s cubic-bezier(.12,.67,.1,1)';
-      whl.style.transform = `rotate(${360 * 6 - res.roll * 360}deg)`;
-    }, 60);
-    let done = false;
-    let timer = 0;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      const win = res.winner_id === a.id ? a : b;
-      const resBox = $('#whRes');
-      if (resBox) resBox.innerHTML = res.won ? `🏆 Siz yutdingiz! <span style="color:#5dff9a">+${fmtN(res.payout)}⭐</span>` : `${esc(win.name)} yutdi: <span style="color:#5dff9a">+${fmtN(res.payout)}⭐</span>`;
-      if (res.balance != null) setBalance(res.balance); else refreshMe().catch(() => {});
+  // To'p g'ildirak o'rtasidan tashlanadi, aylanib roll*360 burchakdagi o'yinchiga tushadi
+  function pvSpin(res) {
+    pv.anim = true;
+    pvWheel(res.players);
+    pvList(res.players, null);
+    $('#pvId').textContent = '#' + res.id;
+    $('#pvHash').textContent = pvShortHash(res.hash);
+    $('#pvHubTxt').textContent = '🎯';
+    $('#pvInfo').textContent = 'To\'p aylanmoqda…';
+    const ball = $('#pvBall');
+    ball.hidden = false;
+    const R = ($('#pvWheel').clientWidth || 260) / 2 - 18;
+    const thetaF = res.roll * 360;
+    const T = 6.5;
+    const t0 = performance.now();
+    const done = () => {
+      pvList(res.players, res.winner.id);
+      $('#pvHubTxt').textContent = '🏆';
+      $('#pvInfo').textContent = `${res.winner.name} yutdi: +${fmtN(res.payout)}⭐`;
+      toast(res.won ? `🏆 Siz yutdingiz! +${fmtN(res.payout)}⭐` : `🏆 ${res.winner.name} yutdi (+${fmtN(res.payout)}⭐)`);
+      refreshMe().catch(() => {});
+      if (res.mine) api(`/pvp/${res.id}/seen`, 'POST').catch(() => {});
       if (tg && tg.HapticFeedback) { try { tg.HapticFeedback.notificationOccurred(res.won ? 'success' : 'warning'); } catch (e) { /* ignore */ } }
-      if (fromPoll) api(`/pvp/${res.id}/seen`, 'POST').catch(() => {});
-      pvShowing = false;
       loadLive();
-      if (current === 'pvp') loadPvp().catch(() => {});
+      setTimeout(() => { ball.hidden = true; pv.anim = false; if (current === 'pvp') loadPvp().catch(() => {}); }, 2600);
     };
-    timer = setTimeout(finish, 5500);
-    const closeNow = () => { finish(); closeModal(); };
-    $('#mClose').onclick = closeNow;
-    $('#modal').onclick = (e) => { if (e.target === $('#modal')) closeNow(); };
+    const frame = (now) => {
+      const t = (now - t0) / 1000;
+      const k = Math.min(1, t / T);
+      const e = 1 - Math.pow(1 - k, 3);
+      const ang = ((thetaF + 360 * 5 * (1 - e)) * Math.PI) / 180;
+      const rr = R * (1 - Math.pow(1 - Math.min(1, t / 0.8), 3)) - (k > 0.9 ? 0 : Math.abs(Math.sin(t * 9)) * 7 * (1 - e));
+      ball.style.transform = `translate(${rr * Math.sin(ang)}px, ${-rr * Math.cos(ang)}px)`;
+      if (k < 1) requestAnimationFrame(frame); else done();
+    };
+    requestAnimationFrame(frame);
   }
-  $('#pvCreate').onclick = async () => {
+  $('#pvBet').addEventListener('input', pvChance);
+  $('#pvGo').onclick = async () => {
     try {
-      const r = await api('/pvp/create', 'POST', { stake: Number($('#pvBet').value) });
+      const r = await api('/pvp/bet', 'POST', { stake: Number($('#pvBet').value) });
       setBalance(r.balance);
-      toast('⚔️ Duel yaratildi. Raqib kutilmoqda...');
+      toast('✅ Stavka qabul qilindi');
       loadPvp();
     } catch (e) { fail(e); }
   };
-  $('#pvOpen').onclick = async (e) => {
-    const j = e.target.closest('[data-pvj]');
-    const c = e.target.closest('[data-pvc]');
+  $('#pvCancel').onclick = async () => {
     try {
-      if (j) {
-        const stake = Number(j.closest('.pvrow').querySelector('.pvin').value);
-        const r = await api(`/pvp/${j.dataset.pvj}/join`, 'POST', { stake });
-        setBalance(r.balance - (r.won ? r.payout : 0)); // natija g'ildirak tugagach ko'rsatiladi
-        showWheel(r, false);
-      } else if (c) {
-        const r = await api(`/pvp/${c.dataset.pvc}/cancel`, 'POST');
-        setBalance(r.balance);
-        toast('Duel bekor qilindi, stavka qaytdi');
-        loadPvp();
-      }
-    } catch (err) { fail(err); loadPvp().catch(() => {}); }
+      const r = await api('/pvp/cancel', 'POST');
+      setBalance(r.balance);
+      toast('Stavka qaytarildi');
+      loadPvp();
+    } catch (e) { fail(e); }
+  };
+  $('#pvCopy').onclick = async () => {
+    try { await navigator.clipboard.writeText(pv.hash); toast('Hash nusxalandi ✅'); } catch (e) { toast(pv.hash); }
   };
 
   /* ============ UPGRADE ============ */
@@ -1014,6 +1103,7 @@
     upgrade_rtp: 'Upgrade: o\'yinchiga qaytish % (RTP)',
     pvp_bot: 'PVP: Epic bot (1 = yoqilgan, 0 = o\'chirilgan)',
     pvp_bot_max: 'PVP: Epic bot maksimal stavkasi ⭐',
+    pvp_countdown: 'PVP: hisoblagich (soniya)',
   };
   const ST_LABEL = { lost: 'yutqazilgan', sold: 'sotilgan/yutuqda', taken: 'olingan ✅' };
   async function loadAdmin() {
@@ -1023,10 +1113,10 @@
     box.className = 'adm';
     const sets = Object.keys(SET_LABELS).map((k) =>
       `<label>${SET_LABELS[k]}</label><input type="number" data-set="${k}" value="${esc(d.settings[k])}" step="any">`).join('');
-    const keys = d.keys.map((k) => `<div><span>${esc(k.emoji)} ${esc(k.name)} · ${k.price}⭐ · ${k.rewards.length} mukofot</span><button class="del" data-delkey="${k.id}">O'chirish</button></div>`).join('') || '<div>Keys yo\'q</div>';
+    const keys = d.keys.map((k) => `<div><span>${esc(k.emoji)} ${esc(k.name)} · ${k.cooldown_hours > 0 ? 'bepul, ' + k.cooldown_hours + ' soatda 1 marta' : k.price + '⭐'} · ${k.rewards.length} mukofot</span><button class="del" data-delkey="${k.id}">O'chirish</button></div>`).join('') || '<div>Keys yo\'q</div>';
     const gifts = d.gifts.map((g) => `<div><span>${esc(g.emoji)} ${esc(g.name)} · ${g.price}⭐</span><button class="del" data-delgift="${g.id}">O'chirish</button></div>`).join('') || '<div>Do\'kon giftlari yo\'q</div>';
     const top = d.contest.map((c, i) => `<div><span>${i + 1}. ${esc(c.n)}${c.un ? ' @' + esc(c.un) : ''}</span><b>${c.s}</b></div>`).join('') || '<div>Ishtirokchi yo\'q</div>';
-    const cat = (d.gift_types || []).map((t, i) => `<div style="flex-wrap:wrap"><span>${giftEmoji(t.b)} ${esc(t.b)} · ${t.c} ta</span><span style="display:flex;gap:6px"><input data-gvi="${i}" type="number" value="${t.v || 0}" style="width:96px;margin:0"><button data-gvs="${i}">OK</button></span><input data-gvm="${i}" placeholder="Rasm URL (ixtiyoriy)" value="${esc(t.img)}" style="margin:4px 0 0"></div>`).join('') || '<div>Katalog bo\'sh</div>';
+    const cat = (d.gift_types || []).map((t, i) => `<div style="flex-wrap:wrap"><span style="display:flex;align-items:center;gap:8px">${gimg({ base_name: t.b, image: t.img })}${esc(t.b)} · ${t.c} ta · omborda ${(d.stock || {})[normN(t.b)] || 0}</span><span style="display:flex;gap:6px"><input data-gvi="${i}" type="number" value="${t.v || 0}" style="width:96px;margin:0"><button data-gvs="${i}">OK</button></span><input data-gvm="${i}" placeholder="Rasm URL (ixtiyoriy)" value="${esc(t.img)}" style="margin:4px 0 0"></div>`).join('') || '<div>Katalog bo\'sh</div>';
     const lost = (d.lost || []).map((g) => `<div><span>🎁 ${esc(g.name)} · ${fmtN(g.value)}⭐<br><small>${esc(g.n)} · ${ST_LABEL[g.status] || g.status}${g.lost_at ? ' · ' + fmtDate(g.lost_at) : ''}</small></span>${g.status === 'taken' ? '' : `<button data-lt="${g.id}">Menga o'tkazish</button>`}</div>`).join('') || '<div>Adminga o\'tgan gift yo\'q</div>';
     box.innerHTML = `
       <h3>🛠 Admin panel <small style="font-size:11px">(${d.users} foydalanuvchi)</small></h3>
@@ -1041,9 +1131,15 @@
         <input id="abId" type="number" placeholder="Foydalanuvchi ID">
         <input id="abAmount" type="number" placeholder="Summa (minus = ayirish)">
         <button class="btn green" id="adBal">Balansga qo'shish</button></div>
+      <div class="card"><h4>🖼 NFT link bilan qo'shish</h4>
+        <textarea id="nftLinks" placeholder="https://paxta.online/nft/LolPop-648&#10;https://paxta.online/nft/Mask-404"></textarea>
+        <input id="nftPrice" type="number" placeholder="Narx ⭐ (ixtiyoriy)">
+        <button class="btn green" id="adNft">Linklardan qo'shish</button>
+        <button class="btn ghost" id="adStock">🔄 Relayer omborini yuklash (API)</button></div>
       <div class="card"><h4>Yangi Keys</h4>
         <div class="row"><input id="nkName" placeholder="Nomi"><input id="nkEmoji" placeholder="Emoji 🔑"></div>
         <input id="nkPrice" type="number" placeholder="Narxi ⭐">
+        <input id="nkCd" type="number" placeholder="Bepul oraliq (soat): 0 = pullik, 24 = kuniga 1 marta bepul">
         <label>Mukofotlar (har qatorda: nomi|qiymat|ehtimol)</label>
         <textarea id="nkRew" placeholder="Mayda|5|50&#10;Oz|8|30&#10;Jackpot|100|1"></textarea>
         <button class="btn green" id="adKey">Keys qo'shish</button></div>
@@ -1082,6 +1178,20 @@
       if (!b || !confirm('Gift sizning akkauntingizga o\'tkazilsinmi?')) return;
       try { await api(`/admin/lostgifts/${b.dataset.lt}/transfer`, 'POST'); toast('O\'tkazildi ✅'); loadAdmin(); } catch (err) { fail(err); }
     };
+    $('#adNft').onclick = async () => {
+      try {
+        const r = await api('/admin/nftlinks', 'POST', { links: $('#nftLinks').value, price: $('#nftPrice').value });
+        toast(`✅ ${r.added.length} ta gift qo'shildi/yangilandi`);
+        loadAdmin();
+      } catch (e) { fail(e); }
+    };
+    $('#adStock').onclick = async () => {
+      try {
+        const r = await api('/admin/syncstock', 'POST');
+        toast(`📦 Omborda ${r.total} ta gift, ${r.types} xil`);
+        loadAdmin();
+      } catch (e) { fail(e); }
+    };
     $('#adBal').onclick = async () => {
       try {
         const r = await api('/admin/balance', 'POST', { user_id: Number($('#abId').value), amount: Number($('#abAmount').value) });
@@ -1094,7 +1204,7 @@
           const [name, value, chance] = l.split('|').map((s) => s.trim());
           return { name, value: Number(value), chance: Number(chance) };
         });
-        await api('/admin/keys', 'POST', { name: $('#nkName').value.trim(), emoji: $('#nkEmoji').value.trim() || '🔑', price: Number($('#nkPrice').value), rewards });
+        await api('/admin/keys', 'POST', { name: $('#nkName').value.trim(), emoji: $('#nkEmoji').value.trim() || '🔑', price: Number($('#nkPrice').value), cooldown_hours: Number($('#nkCd').value) || 0, rewards });
         toast('Keys qo\'shildi ✅');
         loadAdmin();
       } catch (e) { fail(e); }
