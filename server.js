@@ -83,6 +83,14 @@ CREATE TABLE IF NOT EXISTS upgrade_games(
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stake INTEGER, target TEXT, target_value INTEGER,
   chance REAL, roll REAL, win INTEGER, gift_id INTEGER, created_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS pvp_rounds(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, status TEXT NOT NULL DEFAULT 'waiting', seed TEXT, hash TEXT, roll REAL,
+  start_at INTEGER, total INTEGER DEFAULT 0, winner_id INTEGER, payout INTEGER DEFAULT 0, created_at INTEGER, finished_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS pvp_entries(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, round_id INTEGER, user_id INTEGER, stake INTEGER, created_at INTEGER, seen INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS key_cooldowns(user_id INTEGER, key_id INTEGER, last_open INTEGER, PRIMARY KEY(user_id,key_id));
 CREATE TABLE IF NOT EXISTS pvp_games(
   id INTEGER PRIMARY KEY AUTOINCREMENT, creator_id INTEGER, opponent_id INTEGER, stake INTEGER,
   status TEXT DEFAULT 'open', winner_id INTEGER, payout INTEGER DEFAULT 0, created_at INTEGER, finished_at INTEGER
@@ -102,10 +110,11 @@ addCol('pvp_games', 'opp_stake', 'INTEGER');
 addCol('pvp_games', 'roll', 'REAL');
 addCol('pvp_games', 'is_bot', 'INTEGER DEFAULT 0');
 addCol('pvp_games', 'seen', 'INTEGER DEFAULT 1');
+addCol('keys_items', 'cooldown_hours', 'INTEGER DEFAULT 0');
 
 const DEFAULTS = {
-  rocket_rtp: '95', mines_rtp: '95', min_bet: '1', max_bet: '1000',
-  ref_bonus: '5', contest_prize: '100', pvp_fee: '5', gift_to_balance: '0', gift_credit_pct: '100', plinko_rtp: '95', gift_withdraw_fee: '150', pvp_bot: '1', pvp_bot_max: '100', upgrade_rtp: '95',
+  rocket_rtp: '95', mines_rtp: '95', min_bet: '50', max_bet: '1000000000',
+  ref_bonus: '5', contest_prize: '100', pvp_fee: '5', gift_to_balance: '0', gift_credit_pct: '100', plinko_rtp: '95', gift_withdraw_fee: '150', pvp_bot: '1', pvp_bot_max: '500', pvp_countdown: '10', upgrade_rtp: '95',
 };
 const insSetting = db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)');
 Object.entries(DEFAULTS).forEach(([k, v]) => insSetting.run(k, v));
@@ -115,17 +124,35 @@ if (!db.prepare("SELECT 1 FROM kv WHERE key='mig_inv_v1'").get()) {
   db.prepare("UPDATE settings SET value='0' WHERE key='gift_to_balance'").run();
   db.prepare("INSERT INTO kv(key,value) VALUES('mig_inv_v1','1')").run();
 }
+// Bir martalik: minimal stavka 50⭐, maksimal cheksiz
+if (!db.prepare("SELECT 1 FROM kv WHERE key='mig_minmax_v1'").get()) {
+  db.prepare("UPDATE settings SET value='50' WHERE key='min_bet'").run();
+  db.prepare("UPDATE settings SET value='1000000000' WHERE key='max_bet'").run();
+  db.prepare("UPDATE settings SET value='500' WHERE key='pvp_bot_max'").run();
+  db.prepare("INSERT INTO kv(key,value) VALUES('mig_minmax_v1','1')").run();
+}
 // Gift katalogi (Paxta Market narxlari, ⭐). Admin paneldan o'zgartiriladi
-[['B-Day Candle', 498], ['Lol Pop', 570], ['Star Notepad', 1500], ['Precious Peach', 8000], ['Scared Cat', 27777], ['Swiss Watch', 28999]]
+[['Maple Leaf', 50], ['Money Tree', 75], ['Cake', 100], ['B-Day Candle', 498], ['Lol Pop', 570], ['Star Notepad', 1500], ['Precious Peach', 8000], ['Scared Cat', 27777], ['Swiss Watch', 28999], ['Mask', 0], ['Resistance Dog', 0]]
   .forEach(([n, v]) => db.prepare("INSERT OR IGNORE INTO gift_values(base_name,value,image) VALUES(?,?,'')").run(n, v));
 
-// Birinchi ishga tushganda namuna keyslar
-if (db.prepare('SELECT COUNT(*) c FROM keys_items').get().c === 0) {
-  const k1 = db.prepare('INSERT INTO keys_items(name,emoji,price) VALUES(?,?,?)').run('Oddiy Key', '🔑', 10).lastInsertRowid;
-  const k2 = db.prepare('INSERT INTO keys_items(name,emoji,price) VALUES(?,?,?)').run('Oltin Key', '🗝️', 50).lastInsertRowid;
-  const insR = db.prepare('INSERT INTO key_rewards(key_id,name,value,chance) VALUES(?,?,?,?)');
-  [['Mayda', 5, 50], ['Oz', 8, 30], ['Teng', 10, 12], ['Yaxshi', 25, 7], ['Jackpot', 100, 1]].forEach((r) => insR.run(k1, ...r));
-  [['Mayda', 20, 50], ['Oz', 40, 30], ['Teng', 50, 12], ['Yaxshi', 120, 7], ['Jackpot', 500, 1]].forEach((r) => insR.run(k2, ...r));
+// Namuna keyslar. Eski namuna keyslar bir marta yangisiga almashtiriladi
+function seedKeys() {
+  const addKey = (name, emoji, price, cd, rewards) => {
+    const id = db.prepare('INSERT INTO keys_items(name,emoji,price,cooldown_hours) VALUES(?,?,?,?)').run(name, emoji, price, cd).lastInsertRowid;
+    const ins = db.prepare('INSERT INTO key_rewards(key_id,name,value,chance) VALUES(?,?,?,?)');
+    rewards.forEach((r) => ins.run(id, ...r));
+  };
+  addKey('Free Key', '🎁', 0, 24, [['Maple Leaf', 50, 70], ['Money Tree', 75, 25], ['Cake', 100, 5]]);
+  addKey('Silver Key', '🔑', 100, 0, [['Maple Leaf', 50, 50], ['Money Tree', 75, 30], ['Cake', 100, 15], ['B-Day Candle', 498, 4], ['Lol Pop', 570, 0.8], ['Star Notepad', 1500, 0.2]]);
+  addKey('Gold Key', '🗝️', 500, 0, [['Cake', 100, 45.5], ['B-Day Candle', 498, 30], ['Lol Pop', 570, 18], ['Star Notepad', 1500, 6], ['Precious Peach', 8000, 0.5]]);
+}
+if (!db.prepare("SELECT 1 FROM kv WHERE key='mig_keys_v2'").get()) {
+  db.prepare("SELECT id FROM keys_items WHERE name IN ('Oddiy Key','Oltin Key')").all().forEach((k) => {
+    db.prepare('DELETE FROM key_rewards WHERE key_id=?').run(k.id);
+    db.prepare('DELETE FROM keys_items WHERE id=?').run(k.id);
+  });
+  if (!db.prepare("SELECT 1 FROM keys_items WHERE name='Free Key'").get()) seedKeys();
+  db.prepare("INSERT INTO kv(key,value) VALUES('mig_keys_v2','1')").run();
 }
 
 const getS = (k) => Number(db.prepare('SELECT value FROM settings WHERE key=?').get(k).value);
@@ -254,11 +281,27 @@ app.get('/api/live', auth, wrap(() => {
   return { items: [...a, ...b, ...c].slice(0, 16) };
 }));
 
-/* ---- Keys ---- */
-app.get('/api/keys', auth, wrap(() => {
-  const keys = db.prepare('SELECT id,name,emoji,price FROM keys_items WHERE active=1 ORDER BY price').all();
-  const rw = db.prepare('SELECT name,value FROM key_rewards WHERE key_id=? ORDER BY value');
-  return { keys: keys.map((k) => ({ ...k, rewards: rw.all(k.id) })) };
+/* ---- Keys (gift mukofotli, bepul kunlik key bilan) ---- */
+function rewardInfo(r) {
+  const cat = db.prepare("SELECT base_name n, value v, COALESCE(image,'') img FROM gift_values WHERE lower(replace(base_name,' ',''))=lower(replace(?,' ',''))").get(r.name);
+  if (cat && cat.v > 0) return { name: cat.n, value: cat.v, gift: true, image: cat.img };
+  return { name: r.name, value: r.value, gift: false, image: '' };
+}
+function keyFreeIn(uid, k) {
+  if (!(k.cooldown_hours > 0)) return 0;
+  const last = db.prepare('SELECT last_open FROM key_cooldowns WHERE user_id=? AND key_id=?').get(uid, k.id);
+  return last ? Math.max(0, last.last_open + k.cooldown_hours * 3600 - now()) : 0;
+}
+app.get('/api/keys', auth, wrap((req) => {
+  const keys = db.prepare('SELECT id,name,emoji,price,cooldown_hours FROM keys_items WHERE active=1 ORDER BY cooldown_hours DESC, price').all();
+  const rw = db.prepare('SELECT name,value FROM key_rewards WHERE key_id=?');
+  return {
+    keys: keys.map((k) => ({
+      ...k,
+      free_in: keyFreeIn(req.user.id, k),
+      rewards: rw.all(k.id).map(rewardInfo).sort((a, b) => a.value - b.value),
+    })),
+  };
 }));
 
 app.post('/api/keys/:id/open', auth, wrap((req) => {
@@ -269,15 +312,27 @@ app.post('/api/keys/:id/open', auth, wrap((req) => {
     if (!key) fail('Key topilmadi', 404);
     const rw = db.prepare('SELECT * FROM key_rewards WHERE key_id=?').all(id);
     if (!rw.length) fail('Bu keysda mukofot yo\'q');
-    if (getBal(uid) < key.price) fail('Balans yetarli emas');
-    addBal(uid, -key.price);
-    const total = rw.reduce((s, r) => s + r.chance, 0);
+    const free = key.cooldown_hours > 0;
+    if (free) {
+      const left = keyFreeIn(uid, key);
+      if (left > 0) fail(`Bepul keys ${Math.floor(left / 3600)} soat ${Math.floor((left % 3600) / 60)} daqiqadan keyin ochiladi`);
+      db.prepare('INSERT INTO key_cooldowns(user_id,key_id,last_open) VALUES(?,?,?) ON CONFLICT(user_id,key_id) DO UPDATE SET last_open=excluded.last_open').run(uid, id, now());
+    } else {
+      if (getBal(uid) < key.price) fail('Balans yetarli emas');
+      addBal(uid, -key.price);
+      addScore(uid, key.price);
+    }
+    const total = rw.reduce((sum, r) => sum + r.chance, 0);
     let x = (crypto.randomInt(0, 1e9) / 1e9) * total;
     let pick = rw[rw.length - 1];
     for (const r of rw) { if (x < r.chance) { pick = r; break; } x -= r.chance; }
-    addBal(uid, pick.value);
-    addScore(uid, key.price);
-    return { reward: { name: pick.name, value: pick.value }, balance: getBal(uid) };
+    const info = rewardInfo(pick);
+    let giftId = null;
+    if (info.gift) {
+      giftId = db.prepare('INSERT INTO user_gifts(owner_id,owned_gift_id,connection_id,base_name,name,value,status,created_at,image) VALUES(?,?,?,?,?,?,?,?,?)')
+        .run(uid, '', '', info.name, info.name, info.value, 'owned', now(), info.image).lastInsertRowid;
+    } else addBal(uid, info.value);
+    return { reward: info, gift_id: giftId, balance: getBal(uid), free_in: free ? key.cooldown_hours * 3600 : 0 };
   });
   return tx();
 }));
@@ -305,8 +360,58 @@ app.post('/api/gifts/:id/buy', auth, wrap(async (req) => {
   return { ok: true, balance: getBal(uid) };
 }));
 
+/* ---- NFT havolalari: nom, rasm, model avtomatik olinadi ---- */
+const NFT_BASE = (process.env.NFT_BASE || 'https://paxta.online/nft').replace(/\/$/, '');
+const normName = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const spaced = (x) => String(x).replace(/_/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2').trim();
+const slugOf = (x) => { const m = /([A-Za-z0-9_]+-\d+)(?:\.png)?\/?(?:[?#].*)?$/.exec(String(x || '').trim()); return m ? m[1] : null; };
+function metaTags(html) {
+  const out = {};
+  for (const m of String(html).matchAll(/<meta\s+([^>]*?)\/?>/gi)) {
+    const at = {};
+    for (const a of m[1].matchAll(/([\w:-]+)\s*=\s*"([^"]*)"|([\w:-]+)\s*=\s*'([^']*)'/g)) at[(a[1] || a[3]).toLowerCase()] = a[2] != null ? a[2] : a[4];
+    const key = at.property || at.name;
+    if (key && at.content != null) out[key.toLowerCase()] = at.content.replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"');
+  }
+  return out;
+}
+async function nftInfo(slug) {
+  const info = { slug, name: spaced(slug.replace(/-\d+$/, '')), number: Number((/-(\d+)$/.exec(slug) || [])[1]) || null, image: `${NFT_BASE}/${slug}.png`, model: '', backdrop: '', symbol: '' };
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    const r = await fetch(`${NFT_BASE}/${slug}`, { signal: ctrl.signal });
+    clearTimeout(t);
+    const meta = metaTags(await r.text());
+    const tm = /^(.*?)\s*#(\d+)/.exec(meta['og:title'] || '');
+    if (tm && tm[1]) { info.name = tm[1].trim(); info.number = Number(tm[2]); }
+    if (meta['og:image']) info.image = meta['og:image'];
+    const parts = String(meta['og:description'] || meta.description || '').split('·').map((x) => x.split(':').slice(1).join(':').trim());
+    [info.model, info.backdrop, info.symbol] = [parts[0] || '', parts[1] || '', parts[2] || ''];
+  } catch (e) { /* tarmoq xatosi: slug dan olingan ma'lumot qoladi */ }
+  return info;
+}
+// Katalogga qo'shadi yoki yangilaydi. force=true bo'lsa rasm ustidan yoziladi
+function catalogUpsert(name, image, value, force) {
+  const ex = db.prepare("SELECT base_name FROM gift_values WHERE lower(replace(base_name,' ',''))=lower(replace(?,' ',''))").get(name);
+  if (!ex) {
+    db.prepare('INSERT INTO gift_values(base_name,value,image) VALUES(?,?,?)').run(name, value || 0, image || '');
+    return name;
+  }
+  if (image) db.prepare(force ? 'UPDATE gift_values SET image=? WHERE base_name=?' : "UPDATE gift_values SET image=? WHERE base_name=? AND COALESCE(image,'')=''").run(image, ex.base_name);
+  if (value != null) db.prepare('UPDATE gift_values SET value=? WHERE base_name=?').run(value, ex.base_name);
+  return ex.base_name;
+}
+const NFT_SEED = ['LolPop-648', 'Mask-404', 'PreciousPeach-144', 'StarNotepad-520', 'Mask-345', 'ResistanceDog-24'];
+async function seedNft() {
+  for (const slug of NFT_SEED) {
+    const i = await nftInfo(slug);
+    catalogUpsert(i.name, i.image, null, false);
+  }
+}
+
 /* ---- Gift yordamchilari ---- */
-const giftValue = (base) => { const r = db.prepare('SELECT value FROM gift_values WHERE lower(base_name)=lower(?)').get(base); return r ? r.value : 0; };
+const giftValue = (base) => { const r = db.prepare("SELECT value FROM gift_values WHERE lower(replace(base_name,' ',''))=lower(replace(?,' ',''))").get(base); return r ? r.value : 0; };
 const giftOf = (id) => (id ? db.prepare('SELECT * FROM user_gifts WHERE id=?').get(id) : null);
 const kvGet = (k) => { const r = db.prepare('SELECT value FROM kv WHERE key=?').get(k); return r ? r.value : ''; };
 const kvSet = (k, v) => db.prepare('INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(k, String(v));
@@ -388,6 +493,23 @@ app.post('/api/mygifts/:id/sell', auth, wrap((req) => {
   })();
 }));
 
+const relayerGifts = async (conn) => {
+  const out = [];
+  let offset;
+  for (let page = 0; page < 10; page++) {
+    const r = await bot('getBusinessAccountGifts', { business_connection_id: conn, limit: 100, ...(offset ? { offset } : {}) });
+    if (!r.ok) return { ok: false, description: r.description };
+    const res = r.result || {};
+    const list = res.gifts || [];
+    out.push(...list);
+    if (!res.next_offset || !list.length) break;
+    offset = res.next_offset;
+  }
+  return { ok: true, gifts: out };
+};
+const stockBase = (x) => { const g = x.gift || x; return g.base_name || g.name || g.title || ''; };
+const stockImage = (x) => { const g = x.gift || x; return (g.model && g.model.image_url) || g.preview_url || x.preview_url || ''; };
+
 app.post('/api/mygifts/:id/withdraw', auth, wrap(async (req) => {
   const uid = req.user.id;
   const id = Number(req.params.id);
@@ -396,21 +518,32 @@ app.post('/api/mygifts/:id/withdraw', auth, wrap(async (req) => {
     const row = db.prepare("SELECT * FROM user_gifts WHERE id=? AND owner_id=? AND status='owned'").get(id, uid);
     if (!row) fail('Gift topilmadi yoki band', 404);
     const conn = row.connection_id || kvGet('bc_id');
-    if (!conn || !row.owned_gift_id) fail('Bu giftni chiqarib bo\'lmaydi (ulanish ma\'lumoti yo\'q). Admin bilan bog\'laning');
+    if (!conn) fail('Relayer ulanishi topilmadi. Admin bilan bog\'laning');
     if (getBal(uid) < fee) fail(`Chiqarish uchun balansda kamida ${fee}⭐ bo'lishi kerak`);
     addBal(uid, -fee);
     db.prepare("UPDATE user_gifts SET status='withdrawing' WHERE id=?").run(row.id);
     return { ...row, connection_id: conn };
   })();
-  const r = await bot('transferGift', { business_connection_id: g.connection_id, owned_gift_id: g.owned_gift_id, new_owner_chat_id: uid });
-  if (!r.ok) {
+  const undo = (msg, code) => {
     db.transaction(() => {
       db.prepare("UPDATE user_gifts SET status='owned' WHERE id=?").run(g.id);
       addBal(uid, fee);
     })();
-    fail('Chiqarib bo\'lmadi: ' + (r.description || 'noma\'lum xato') + ' (komissiya qaytarildi)', 502);
+    fail(msg + ' (komissiya qaytarildi)', code || 502);
+  };
+  let ownedId = g.owned_gift_id;
+  if (!ownedId) {
+    // Virtual gift (keys/upgrade yutug'i): @relayer omboridan shu turdagi gift topiladi
+    const st = await relayerGifts(g.connection_id);
+    if (!st.ok) undo('Ombor o\'qilmadi: ' + (st.description || 'noma\'lum xato'));
+    const used = new Set(db.prepare("SELECT owned_gift_id id FROM user_gifts WHERE status IN ('owned','bet','pending','withdrawing') AND owned_gift_id<>''").all().map((x) => x.id));
+    const found = st.gifts.find((x) => x.owned_gift_id && !used.has(String(x.owned_gift_id)) && x.can_be_transferred !== false && normName(stockBase(x)) === normName(g.base_name));
+    if (!found) undo('Hozircha omborda bu gift yo\'q, keyinroq urinib ko\'ring yoki admin bilan bog\'laning', 409);
+    ownedId = String(found.owned_gift_id);
   }
-  db.prepare("UPDATE user_gifts SET status='withdrawn', lost_at=? WHERE id=?").run(now(), g.id);
+  const r = await bot('transferGift', { business_connection_id: g.connection_id, owned_gift_id: ownedId, new_owner_chat_id: uid });
+  if (!r.ok) undo('Chiqarib bo\'lmadi: ' + (r.description || 'noma\'lum xato'));
+  db.prepare("UPDATE user_gifts SET status='withdrawn', lost_at=?, owned_gift_id=? WHERE id=?").run(now(), ownedId, g.id);
   ADMIN_IDS.forEach((a) => tell(a, `📤 Gift chiqarildi: ${g.name} → ID ${uid} (komissiya ${fee}⭐)`));
   return { balance: getBal(uid), fee };
 }));
@@ -603,108 +736,142 @@ app.post('/api/mines/cashout', auth, wrap((req) => {
   return r;
 }));
 
-/* ---- PVP duel: ko'p tikkanning shansi baland, g'ildirak bilan aniqlanadi ---- */
+/* ---- PVP duel xonasi: ko'p o'yinchi, 10 soniya, g'ildirak va to'p ---- */
 const BOT_ID = -1;
 db.prepare('INSERT OR IGNORE INTO users(id,first_name,username,photo_url,balance,created_at) VALUES(?,?,?,?,0,?)').run(BOT_ID, 'Epic bot', 'epic_bot', '', now());
+const sha = (x) => crypto.createHash('sha256').update(x).digest('hex');
 
-// Epic bot har doim kamida 3 ta ochiq raundda o'zi stavka qo'yib turadi
-function ensureBotRounds() {
-  if (!getS('pvp_bot')) {
-    db.prepare("UPDATE pvp_games SET status='cancelled', finished_at=? WHERE creator_id=? AND status='open'").run(now(), BOT_ID);
-    return;
-  }
-  const have = db.prepare("SELECT COUNT(*) c FROM pvp_games WHERE creator_id=? AND status='open'").get(BOT_ID).c;
+function addEntry(roundId, uid, stake) {
+  db.prepare('INSERT INTO pvp_entries(round_id,user_id,stake,created_at,seen) VALUES(?,?,?,?,?)').run(roundId, uid, stake, now(), uid === BOT_ID ? 1 : 0);
+  db.prepare('UPDATE pvp_rounds SET total = total + ? WHERE id=?').run(stake, roundId);
+}
+function roundPlayers(roundId) {
+  const rows = db.prepare(`SELECT e.user_id uid, SUM(e.stake) stake, MIN(e.id) first, u.first_name n, u.photo_url p
+    FROM pvp_entries e JOIN users u ON u.id=e.user_id WHERE e.round_id=? GROUP BY e.user_id ORDER BY first`).all(roundId);
+  const total = rows.reduce((a, r) => a + r.stake, 0);
+  return rows.map((r) => ({ id: r.uid, name: r.n, photo: r.p, bot: r.uid === BOT_ID, stake: r.stake, pct: total ? Math.round((r.stake / total) * 1000) / 10 : 0 }));
+}
+function startCountdownIfReady(roundId) {
+  const r = db.prepare('SELECT * FROM pvp_rounds WHERE id=?').get(roundId);
+  if (r.status !== 'waiting') return;
+  const distinct = db.prepare('SELECT COUNT(DISTINCT user_id) c FROM pvp_entries WHERE round_id=?').get(roundId).c;
+  if (distinct >= 2) db.prepare("UPDATE pvp_rounds SET status='countdown', start_at=? WHERE id=?").run(Date.now() + getS('pvp_countdown') * 1000, roundId);
+}
+function botJoin(roundId) {
   const min = getS('min_bet');
   const max = Math.max(min, Math.min(getS('max_bet'), getS('pvp_bot_max')));
-  const ins = db.prepare('INSERT INTO pvp_games(creator_id,stake,created_at,is_bot,seen) VALUES(?,?,?,1,1)');
-  for (let i = have; i < 3; i++) ins.run(BOT_ID, min + crypto.randomInt(0, max - min + 1), now());
+  addEntry(roundId, BOT_ID, min + crypto.randomInt(0, max - min + 1));
+  startCountdownIfReady(roundId);
 }
-ensureBotRounds();
-
-function pvpResult(g, viewerId) {
-  const u = (id) => db.prepare('SELECT id, first_name n, photo_url p FROM users WHERE id=?').get(id) || { id, n: '?', p: '' };
-  const a = u(g.creator_id);
-  const b = u(g.opponent_id);
-  const total = g.stake + g.opp_stake;
-  const pct = (x) => Math.round((x / total) * 1000) / 10;
+function newRound() {
+  const seed = crypto.randomBytes(16).toString('hex');
+  const roll = parseInt(sha(seed + ':roll').slice(0, 12), 16) / 2 ** 48;
+  const id = db.prepare("INSERT INTO pvp_rounds(status,seed,hash,roll,created_at) VALUES('waiting',?,?,?,?)").run(seed, sha(seed), roll, now()).lastInsertRowid;
+  if (getS('pvp_bot')) botJoin(id);
+  return id;
+}
+const openRound = () => db.prepare("SELECT * FROM pvp_rounds WHERE status IN ('waiting','countdown') ORDER BY id DESC LIMIT 1").get();
+function currentRound() {
+  let r = openRound();
+  if (!r) { newRound(); r = openRound(); }
+  return r;
+}
+function finishRound(r) {
+  const players = roundPlayers(r.id);
+  const total = players.reduce((a, p) => a + p.stake, 0);
+  if (players.length < 2) { // raqib yo'q: stavkalar qaytariladi
+    players.forEach((p) => { if (p.id !== BOT_ID) addBal(p.id, p.stake); });
+    db.prepare("UPDATE pvp_rounds SET status='cancelled', finished_at=? WHERE id=?").run(now(), r.id);
+    return null;
+  }
+  const t = r.roll * total;
+  let cum = 0;
+  let winner = players[players.length - 1];
+  for (const p of players) { cum += p.stake; if (t < cum) { winner = p; break; } }
+  const payout = Math.floor(total * (1 - getS('pvp_fee') / 100));
+  if (winner.id !== BOT_ID) addBal(winner.id, payout);
+  db.prepare("UPDATE pvp_rounds SET status='done', winner_id=?, payout=?, total=?, finished_at=? WHERE id=?").run(winner.id, payout, total, now(), r.id);
+  db.prepare('UPDATE pvp_entries SET seen=0 WHERE round_id=? AND user_id>0').run(r.id);
+  return { winner, payout, players };
+}
+function pvpTick() {
+  const r = openRound();
+  if (!r) { newRound(); return; }
+  if (r.status === 'waiting' && getS('pvp_bot') && !db.prepare('SELECT 1 FROM pvp_entries WHERE round_id=? AND user_id=?').get(r.id, BOT_ID)) botJoin(r.id);
+  const cur = openRound();
+  if (cur.status === 'countdown' && Date.now() >= cur.start_at) {
+    const res = db.transaction(() => finishRound(cur))();
+    newRound();
+    if (res && res.winner.id !== BOT_ID) tell(res.winner.id, `🏆 PVP #${cur.id}: siz yutdingiz! +${res.payout}⭐`);
+  }
+}
+function roundState(id) {
+  const r = db.prepare('SELECT * FROM pvp_rounds WHERE id=?').get(id);
+  const players = roundPlayers(id);
+  return { id, status: r.status, hash: r.hash, start_at: r.start_at, total: players.reduce((a, p) => a + p.stake, 0), players };
+}
+function roundView(r, viewerId) {
+  const players = roundPlayers(r.id);
+  const winner = players.find((p) => p.id === r.winner_id) || players[0];
   return {
-    id: g.id, roll: g.roll, winner_id: g.winner_id, payout: g.payout, total,
-    creator: { id: a.id, name: a.n, photo: a.p, bot: a.id === BOT_ID, stake: g.stake, pct: pct(g.stake) },
-    opp: { id: b.id, name: b.n, photo: b.p, bot: b.id === BOT_ID, stake: g.opp_stake, pct: pct(g.opp_stake) },
-    won: g.winner_id === viewerId,
+    id: r.id, hash: r.hash, seed: r.seed, roll: r.roll, total: r.total, payout: r.payout, players, winner,
+    finished_ago: Math.max(0, now() - (r.finished_at || now())),
+    mine: players.some((p) => p.id === viewerId), won: r.winner_id === viewerId,
   };
 }
 
 app.get('/api/pvp', auth, wrap((req) => {
-  ensureBotRounds();
-  const open = db.prepare(`SELECT p.id, p.stake, p.creator_id, p.is_bot, u.first_name n, u.photo_url ph FROM pvp_games p
-    JOIN users u ON u.id=p.creator_id WHERE p.status='open' ORDER BY p.is_bot DESC, p.id DESC LIMIT 30`).all()
-    .map((x) => ({ id: x.id, stake: x.stake, name: x.n, photo: x.ph, bot: !!x.is_bot, mine: x.creator_id === req.user.id }));
-  const recent = db.prepare(`SELECT p.stake, COALESCE(p.opp_stake, p.stake) opp, p.payout, u1.first_name a, u2.first_name b, uw.first_name w FROM pvp_games p
-    JOIN users u1 ON u1.id=p.creator_id JOIN users u2 ON u2.id=p.opponent_id JOIN users uw ON uw.id=p.winner_id
-    WHERE p.status='done' ORDER BY p.id DESC LIMIT 10`).all();
-  const fin = db.prepare("SELECT * FROM pvp_games WHERE creator_id=? AND status='done' AND seen=0 ORDER BY id LIMIT 1").get(req.user.id);
+  pvpTick();
+  const uid = req.user.id;
+  const cur = currentRound();
+  const last = db.prepare("SELECT * FROM pvp_rounds WHERE status='done' ORDER BY id DESC LIMIT 1").get();
+  const top = db.prepare(`SELECT r.payout p, u.first_name n FROM pvp_rounds r JOIN users u ON u.id=r.winner_id
+    WHERE r.status='done' ORDER BY r.payout DESC LIMIT 1`).get();
+  const unseen = db.prepare(`SELECT r.* FROM pvp_rounds r WHERE r.status='done'
+    AND EXISTS(SELECT 1 FROM pvp_entries e WHERE e.round_id=r.id AND e.user_id=? AND e.seen=0) ORDER BY r.id LIMIT 1`).get(uid);
+  let play = null;
+  if (unseen) play = roundView(unseen, uid);
+  else if (last && now() - last.finished_at <= 12) play = roundView(last, uid);
   const s = allS();
-  return { open, recent, finished: fin ? pvpResult(fin, req.user.id) : null, fee: s.pvp_fee, min_bet: s.min_bet, max_bet: s.max_bet };
+  return {
+    now: Date.now(), round: roundState(cur.id), top: top || null, last: last ? { ...roundView(last, uid) } : null, play,
+    fee: s.pvp_fee, min_bet: s.min_bet, max_bet: s.max_bet, countdown: s.pvp_countdown, bot: !!s.pvp_bot,
+  };
 }));
 
-app.post('/api/pvp/create', auth, wrap((req) => {
-  const stake = parseBet(req.body.stake);
+app.post('/api/pvp/bet', auth, wrap((req) => {
+  pvpTick();
   const uid = req.user.id;
-  return db.transaction(() => {
-    if (db.prepare("SELECT COUNT(*) c FROM pvp_games WHERE creator_id=? AND status='open'").get(uid).c >= 3) fail('Bir vaqtda 3 tadan ortiq ochiq duel bo\'lmasin');
+  const stake = parseBet(req.body.stake);
+  const rid = db.transaction(() => {
+    const r = currentRound();
+    if (r.status === 'countdown' && Date.now() >= r.start_at) fail('Raund boshlandi. Keyingi raundni kuting');
     if (getBal(uid) < stake) fail('Balans yetarli emas');
     addBal(uid, -stake);
-    const id = db.prepare('INSERT INTO pvp_games(creator_id,stake,created_at) VALUES(?,?,?)').run(uid, stake, now()).lastInsertRowid;
-    return { id, balance: getBal(uid) };
+    addEntry(r.id, uid, stake);
+    addScore(uid, stake);
+    startCountdownIfReady(r.id);
+    return r.id;
   })();
+  return { round: roundState(rid), balance: getBal(uid) };
 }));
 
-app.post('/api/pvp/:id/cancel', auth, wrap((req) => {
+app.post('/api/pvp/cancel', auth, wrap((req) => {
   const uid = req.user.id;
-  const id = Number(req.params.id);
   return db.transaction(() => {
-    const g = db.prepare("SELECT * FROM pvp_games WHERE id=? AND status='open' AND creator_id=?").get(id, uid);
-    if (!g) fail('Duel topilmadi', 404);
-    db.prepare("UPDATE pvp_games SET status='cancelled', finished_at=? WHERE id=?").run(now(), id);
-    addBal(uid, g.stake);
+    const r = currentRound();
+    if (r.status !== 'waiting') fail('Raund boshlangan, bekor qilib bo\'lmaydi');
+    const mine = db.prepare('SELECT COALESCE(SUM(stake),0) s FROM pvp_entries WHERE round_id=? AND user_id=?').get(r.id, uid).s;
+    if (!mine) fail('Bu raundda stavkangiz yo\'q', 404);
+    db.prepare('DELETE FROM pvp_entries WHERE round_id=? AND user_id=?').run(r.id, uid);
+    db.prepare('UPDATE pvp_rounds SET total = total - ? WHERE id=?').run(mine, r.id);
+    addBal(uid, mine);
     return { balance: getBal(uid) };
   })();
 }));
 
 app.post('/api/pvp/:id/seen', auth, wrap((req) => {
-  db.prepare('UPDATE pvp_games SET seen=1 WHERE id=? AND creator_id=?').run(Number(req.params.id), req.user.id);
-}));
-
-app.post('/api/pvp/:id/join', auth, wrap((req) => {
-  const uid = req.user.id;
-  const id = Number(req.params.id);
-  const row = db.transaction(() => {
-    const g = db.prepare("SELECT * FROM pvp_games WHERE id=? AND status='open'").get(id);
-    if (!g) fail('Duel topilmadi yoki allaqachon boshlangan', 404);
-    if (g.creator_id === uid) fail('O\'zingizning duelingizga qo\'shila olmaysiz');
-    const mine = req.body.stake === undefined || req.body.stake === '' ? g.stake : parseBet(req.body.stake);
-    if (getBal(uid) < mine) fail('Balans yetarli emas');
-    addBal(uid, -mine);
-    const total = g.stake + mine;
-    const roll = crypto.randomInt(0, 1e9) / 1e9;
-    const winner = roll < g.stake / total ? g.creator_id : uid; // ko'p tikkanning shansi baland
-    const payout = Math.floor(total * (1 - getS('pvp_fee') / 100));
-    if (winner !== BOT_ID) addBal(winner, payout);
-    db.prepare("UPDATE pvp_games SET status='done', opponent_id=?, opp_stake=?, winner_id=?, payout=?, roll=?, finished_at=?, seen=? WHERE id=?")
-      .run(uid, mine, winner, payout, roll, now(), g.is_bot ? 1 : 0, id);
-    if (g.creator_id !== BOT_ID) addScore(g.creator_id, g.stake);
-    addScore(uid, mine);
-    return db.prepare('SELECT * FROM pvp_games WHERE id=?').get(id);
-  })();
-  ensureBotRounds();
-  const res = pvpResult(row, uid);
-  if (row.creator_id !== BOT_ID) {
-    const who = req.user.username ? '@' + req.user.username : req.user.first_name;
-    tell(row.creator_id, `⚔️ PVP: ${who} duelingizga ${res.opp.stake}⭐ bilan qo'shildi (sizning shansingiz ${res.creator.pct}%).\n` +
-      (row.winner_id === row.creator_id ? `🏆 Siz yutdingiz! +${row.payout}⭐` : `😔 Siz yutqazdingiz (-${row.stake}⭐).`));
-  }
-  return { ...res, balance: getBal(uid), fee: getS('pvp_fee') };
+  db.prepare('UPDATE pvp_entries SET seen=1 WHERE round_id=? AND user_id=?').run(Number(req.params.id), req.user.id);
 }));
 
 /* ---- UPGRADE: gift/Stars bilan qimmatroq giftga aylantirish ---- */
@@ -853,6 +1020,7 @@ ADMIN.get('/data', wrap(() => {
     contest: db.prepare(`SELECT u.id uid, u.first_name n, u.username un, c.score s FROM contest_scores c
       JOIN users u ON u.id=c.user_id ORDER BY c.score DESC LIMIT 10`).all(),
     users: db.prepare('SELECT COUNT(*) c FROM users WHERE id>0').get().c,
+    stock: (() => { try { return JSON.parse(kvGet('stock_json') || '{}'); } catch (e) { return {}; } })(),
     gift_types: db.prepare(`SELECT v.base_name b, v.value v, COALESCE(v.image,'') img,
       (SELECT COUNT(*) FROM user_gifts g WHERE g.base_name=v.base_name) c FROM gift_values v ORDER BY v.value`).all(),
     lost: db.prepare(`SELECT g.id, g.name, g.value, g.lost_at, g.status, u.first_name n FROM user_gifts g
@@ -868,6 +1036,7 @@ ADMIN.post('/settings', wrap((req) => {
     const v = Number(b[k]);
     if (!Number.isFinite(v) || v < 0) fail(`${k} noto'g'ri`);
     if (['rocket_rtp', 'mines_rtp', 'plinko_rtp', 'upgrade_rtp'].includes(k) && (v < 1 || v > 100)) fail('RTP 1 dan 100 gacha bo\'lsin');
+    if (k === 'pvp_countdown' && (!Number.isInteger(v) || v < 3 || v > 120)) fail('Hisoblagich 3 dan 120 soniyagacha bo\'lsin');
     if (k === 'pvp_bot_max' && (!Number.isInteger(v) || v < 1)) fail('Bot stavkasi butun son (>=1) bo\'lsin');
     if (k === 'gift_withdraw_fee' && !Number.isInteger(v)) fail('Chiqarish komissiyasi butun son bo\'lsin');
     if ((k === 'min_bet' || k === 'max_bet') && (!Number.isInteger(v) || v < 1)) fail('Stavka butun son (>=1) bo\'lsin');
@@ -893,9 +1062,11 @@ function cleanRewards(r) {
   });
 }
 function cleanKey(b) {
-  const price = Number(b.price);
-  if (!b.name || !Number.isInteger(price) || price < 1) fail('Key nomi va narxi (butun son) kerak');
-  return { name: String(b.name).slice(0, 40), emoji: String(b.emoji || '🔑').slice(0, 8), price, rewards: cleanRewards(b.rewards) };
+  const cd = Number(b.cooldown_hours) || 0;
+  if (!Number.isInteger(cd) || cd < 0 || cd > 720) fail('Bepul oraliq soatlarda (0 dan 720 gacha) bo\'lsin');
+  const price = cd > 0 ? 0 : Number(b.price);
+  if (!b.name || !Number.isInteger(price) || price < (cd > 0 ? 0 : 1)) fail('Key nomi va narxi (butun son) kerak');
+  return { name: String(b.name).slice(0, 40), emoji: String(b.emoji || '🔑').slice(0, 8), price, cd, rewards: cleanRewards(b.rewards) };
 }
 const saveRewards = (keyId, rewards) => {
   db.prepare('DELETE FROM key_rewards WHERE key_id=?').run(keyId);
@@ -906,7 +1077,7 @@ const saveRewards = (keyId, rewards) => {
 ADMIN.post('/keys', wrap((req) => {
   const k = cleanKey(req.body || {});
   return db.transaction(() => {
-    const id = db.prepare('INSERT INTO keys_items(name,emoji,price) VALUES(?,?,?)').run(k.name, k.emoji, k.price).lastInsertRowid;
+    const id = db.prepare('INSERT INTO keys_items(name,emoji,price,cooldown_hours) VALUES(?,?,?,?)').run(k.name, k.emoji, k.price, k.cd).lastInsertRowid;
     saveRewards(id, k.rewards);
     return { id };
   })();
@@ -916,7 +1087,7 @@ ADMIN.put('/keys/:id', wrap((req) => {
   const k = cleanKey(req.body || {});
   const active = req.body.active === 0 || req.body.active === false ? 0 : 1;
   db.transaction(() => {
-    const r = db.prepare('UPDATE keys_items SET name=?,emoji=?,price=?,active=? WHERE id=?').run(k.name, k.emoji, k.price, active, id);
+    const r = db.prepare('UPDATE keys_items SET name=?,emoji=?,price=?,cooldown_hours=?,active=? WHERE id=?').run(k.name, k.emoji, k.price, k.cd, active, id);
     if (!r.changes) fail('Key topilmadi', 404);
     saveRewards(id, k.rewards);
   })();
@@ -1009,6 +1180,37 @@ ADMIN.post('/lostgifts/:id/transfer', wrap(async (req) => {
   db.prepare("UPDATE user_gifts SET status='taken' WHERE id=?").run(g.id);
 }));
 
+ADMIN.post('/nftlinks', wrap(async (req) => {
+  const raw = Array.isArray(req.body.links) ? req.body.links : String(req.body.links || '').split(/[\s,]+/);
+  const slugs = [...new Set(raw.map(slugOf).filter(Boolean))].slice(0, 30);
+  if (!slugs.length) fail('To\'g\'ri NFT havolasi topilmadi (masalan https://paxta.online/nft/LolPop-648)');
+  const price = req.body.price === undefined || req.body.price === '' ? null : Number(req.body.price);
+  if (price !== null && (!Number.isInteger(price) || price < 0)) fail('Narx butun son bo\'lsin');
+  const added = [];
+  for (const slug of slugs) {
+    const i = await nftInfo(slug);
+    const name = catalogUpsert(i.name, i.image, price, true);
+    added.push({ name, image: i.image, model: i.model, backdrop: i.backdrop, symbol: i.symbol, number: i.number });
+  }
+  return { added };
+}));
+
+ADMIN.post('/syncstock', wrap(async () => {
+  const conn = kvGet('bc_id');
+  if (!conn) fail('Relayer ulanishi hali kelmagan (business_connection). @PaxtaFather → /setrelayer ni qayta bajaring');
+  const st = await relayerGifts(conn);
+  if (!st.ok) fail('Ombor o\'qilmadi: ' + (st.description || 'noma\'lum xato'), 502);
+  const counts = {};
+  st.gifts.forEach((x) => {
+    const base = stockBase(x);
+    if (!base) return;
+    const name = catalogUpsert(base.includes(' ') ? base : spaced(base), stockImage(x), null, false);
+    counts[normName(name)] = (counts[normName(name)] || 0) + 1;
+  });
+  kvSet('stock_json', JSON.stringify(counts));
+  return { total: st.gifts.length, types: Object.keys(counts).length, counts };
+}));
+
 app.use('/api/admin', ADMIN);
 app.use('/api', (req, res) => res.status(404).json({ error: 'Topilmadi' }));
 
@@ -1022,8 +1224,10 @@ function parseGift(m) {
   const star = Number(raw.star_count || inner.star_count || inner.stars || 0) || 0;
   const ownedId = String(m.owned_gift_id || raw.owned_gift_id || '');
   const nm = (o) => (o && typeof o === 'object' ? String(o.name || '') : String(o || '')).slice(0, 60);
-  const image = String((inner.model && inner.model.image_url) || inner.preview_url || raw.preview_url || inner.image_url || '').slice(0, 500);
-  return { base, name, star, ownedId, model: nm(inner.model), backdrop: nm(inner.backdrop), symbol: nm(inner.symbol), number: Number(inner.number) || null, image };
+  const slug = /^[A-Za-z0-9_]+-\d+$/.test(String(inner.name || '')) ? inner.name : '';
+  const image = String((inner.model && inner.model.image_url) || inner.preview_url || raw.preview_url || inner.image_url || (slug ? `${NFT_BASE}/${slug}.png` : '')).slice(0, 500);
+  const number = Number(inner.number) || null;
+  return { base, name: number && !/#\d+$/.test(name) && slug ? `${base} #${number}` : name, star, ownedId, model: nm(inner.model), backdrop: nm(inner.backdrop), symbol: nm(inner.symbol), number, image };
 }
 
 async function onGift(m) {
@@ -1033,7 +1237,7 @@ async function onGift(m) {
   if (String(m.from.id) === kvGet('relayer_id')) return; // relayer akkauntning o'z xabari
   ensureUser(m.from);
   if (gft.ownedId && db.prepare('SELECT 1 FROM user_gifts WHERE owned_gift_id=?').get(gft.ownedId)) return;
-  const ex = db.prepare('SELECT base_name FROM gift_values WHERE lower(base_name)=lower(?)').get(gft.base);
+  const ex = db.prepare("SELECT base_name FROM gift_values WHERE lower(replace(base_name,' ',''))=lower(replace(?,' ',''))").get(gft.base);
   const key = ex ? ex.base_name : gft.base;
   db.prepare("INSERT INTO gift_values(base_name,value,image) VALUES(?,0,?) ON CONFLICT(base_name) DO UPDATE SET image=CASE WHEN COALESCE(image,'')='' THEN excluded.image ELSE image END").run(key, gft.image);
   const val = giftValue(key) || gft.star;
@@ -1140,4 +1344,6 @@ async function poll() {
 }
 
 app.listen(PORT, () => console.log(`Server: http://localhost:${PORT}`));
+setInterval(() => { try { pvpTick(); } catch (e) { console.error('pvpTick:', e); } }, 1000);
+seedNft().catch((e) => console.error('seedNft:', e.message));
 poll().catch((e) => console.error('poll to\'xtadi:', e));
