@@ -291,3 +291,59 @@ main{padding:0 16px}
 .mk{cursor:pointer;transition:transform .15s,box-shadow .2s}
 .mk.sel{box-shadow:0 0 0 2px #55c840,0 6px 18px rgba(85,200,64,.35);transform:translateY(-2px)}
 .mk.dim{opacity:.35;cursor:not-allowed}
+
+/* ===== PVP xonasi ===== */
+.pvarena{display:flex;justify-content:center;margin:8px 0 16px}
+.pvwheel{position:relative;width:260px;height:260px;border-radius:50%;background:#2a2d3a;border:6px solid #fff;box-shadow:0 0 0 5px #2b2e3a,0 16px 40px rgba(0,0,0,.55),0 0 60px rgba(124,92,255,.28)}
+.pvhub{position:absolute;left:50%;top:50%;width:86px;height:86px;margin:-43px 0 0 -43px;border-radius:50%;background:#16171d;border:4px solid #fff;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:30px;z-index:2;box-shadow:0 4px 14px rgba(0,0,0,.5)}
+.pvball{position:absolute;left:50%;top:50%;width:20px;height:20px;margin:-10px 0 0 -10px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff,#ffd24a 60%,#ff8a00);box-shadow:0 0 14px #ffd24a,0 2px 6px rgba(0,0,0,.6);z-index:3}
+.pvlab{position:absolute;left:50%;top:50%;width:0;height:0;transform:rotate(var(--ang))}
+.pvlab>div{position:absolute;left:0;top:0;transform:translate(-50%,-50%) translateY(-88px) rotate(calc(var(--ang) * -1));font-weight:800;font-size:12px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.7);white-space:nowrap}
+.pvpills{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.pill{background:#0d0b1a;border:1px solid #2a2440;border-radius:20px;padding:12px;display:flex;align-items:center;gap:8px;font-size:12px;font-weight:800;position:relative;min-height:44px}
+.pill .pe{position:absolute;top:-8px;left:12px;font-style:normal;font-size:9px;font-weight:800;color:#fff;padding:2px 8px;border-radius:8px;background:#6b5ce7}
+.pill .pe.last{background:#2f8cff}
+.pvhash{text-align:center;color:var(--mute);font-size:13px;margin:6px 0 12px}
+.pvhash b{color:#fff}
+.pvhash button{background:none;color:var(--mute);margin-left:8px;font-size:17px}
+.pvhead2{display:flex;justify-content:space-between;font-size:12px;font-weight:800;color:var(--mute);padding:11px 14px;background:linear-gradient(90deg,#2a1240,#170b26);border-radius:16px 16px 0 0}
+.pvhead2 b{color:#fff}
+.pvplayers{background:#0b0a12;border:1px solid #241f35;border-top:0;border-radius:0 0 16px 16px;padding:8px;margin-bottom:12px}
+.pvp{display:flex;align-items:center;gap:10px;padding:9px;border-radius:14px;background:#000;border:1px solid #241f35;margin-bottom:6px}
+.pvp:last-child{margin-bottom:0}
+.pvp.win{border-color:#ffd24a;box-shadow:0 0 16px rgba(255,210,74,.4)}
+.pvn{flex:1;min-width:0}.pvn b{font-size:13px}.pvn small{display:block;font-size:11px}
+.pvs{font-size:13px;white-space:nowrap}
+.pvchance{color:#ffd24a;font-weight:800;font-size:13px;margin:-4px 0 8px;min-height:16px}
+.how{background:var(--card);border-radius:16px;padding:12px 14px;border:1px solid #262a36;font-size:13px;line-height:1.55}
+.how summary{cursor:pointer;font-weight:700;color:var(--mute)}
+.how code{background:#262933;padding:1px 6px;border-radius:6px}
+/* ===== Keys (ruletka) ===== */
+.kcard.k0{background:linear-gradient(160deg,#3a2f7a,#221a50)}
+.kcard.k1{background:linear-gradient(160deg,#17525c,#0d2f3a)}
+.kcard.k2{background:linear-gradient(160deg,#6a3a1c,#3b1f0d)}
+.kcard.k3{background:linear-gradient(160deg,#5a1d5f,#2e0e33)}
+.kcard.freekey{border-color:#34d36d;box-shadow:0 0 22px rgba(52,211,109,.35)}
+.kglow{position:absolute;inset:-30%;background:conic-gradient(from 0deg,transparent,rgba(255,255,255,.14),transparent 30%);animation:spin 5s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.kcard>*{position:relative;z-index:1}
+.kcard .kfree{color:#5dff9a;font-weight:800}
+.kcard .kfree.wait{color:#ffd24a}
+.kitems{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:10px 0}
+.ki{background:#14122b;border-radius:18px;padding:10px 6px;text-align:center;border:1px solid #23204a}
+.ki .gimg{height:58px;font-size:42px}
+.ki b{display:block;font-size:12px;margin:4px 0 6px}
+.ki .pr{display:inline-block;background:#24213f;border-radius:14px;padding:5px 12px;color:#ffb62e;font-weight:800;font-size:13px}
+.roul{position:relative;overflow:hidden;border-radius:16px;background:#0e0d1f;border:1px solid #2c2a55;margin:10px 0;height:130px}
+.roul::before,.roul::after{content:"";position:absolute;top:0;bottom:0;width:56px;z-index:2;pointer-events:none}
+.roul::before{left:0;background:linear-gradient(90deg,#0e0d1f,transparent)}
+.roul::after{right:0;background:linear-gradient(-90deg,#0e0d1f,transparent)}
+.rmark{position:absolute;left:50%;top:0;bottom:0;width:3px;margin-left:-1.5px;background:#ffd24a;z-index:3;box-shadow:0 0 12px #ffd24a}
+.rstrip{display:flex;gap:8px;position:absolute;left:0;top:10px;will-change:transform}
+.ri{width:92px;height:110px;flex:none;background:#1a1838;border-radius:14px;display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid #2c2a55;text-align:center}
+.ri .gimg{height:52px;font-size:38px}
+.ri b{font-size:11px;margin-top:4px;max-width:86px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.ri small{color:#ffb62e;font-weight:800}
+.kres{flex-direction:column;gap:8px}
+.kres .gcard{width:70%}
+.adm .gimg{height:36px;width:36px;font-size:28px;flex:none}
