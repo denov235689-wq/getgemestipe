@@ -113,18 +113,32 @@
     <!-- ============ PVP ============ -->
     <section class="view" data-view="pvp">
       <button class="back" data-go="home">← Orqaga</button>
-      <h3 class="title">⚔️ PVP Duel</h3>
+      <div class="pvarena">
+        <div class="pvwheel" id="pvWheel">
+          <div id="pvLabs"></div>
+          <div class="pvhub"><span id="pvHubTxt">⏳</span></div>
+          <div class="pvball" id="pvBall" hidden></div>
+        </div>
+      </div>
+      <div class="pvpills">
+        <div class="pill"><em class="pe top">TOP</em><span id="pvTop">—</span></div>
+        <div class="pill"><em class="pe last">OXIRGI</em><span id="pvLast">—</span></div>
+      </div>
+      <div class="pvhash">Round hash: <b id="pvHash">—</b><button id="pvCopy" aria-label="Nusxalash">⧉</button></div>
+      <div class="pvhead2"><span>O'YINCHILAR <b id="pvCnt">0</b></span><span>O'YIN <b id="pvId">#0</b></span></div>
+      <div id="pvPlayers" class="pvplayers"></div>
       <div class="panel">
-        <p class="hint" style="text-align:left;margin-top:0">Ikki o'yinchi tikadi. <b>Kim ko'p tiksa, g'alaba shansi shuncha baland.</b> G'olibni g'ildirak aniqlaydi.</p>
-        <label>O'z duelingizni yarating: stavka (⭐)</label>
-        <input type="number" id="pvBet" value="10" min="1" inputmode="numeric">
-        <button class="btn yellow" id="pvCreate">Duel yaratish</button>
+        <label>Stavka</label>
+        <div class="inrow"><input type="number" id="pvBet" value="50" min="50" inputmode="numeric"><div class="quick" data-for="pvBet"><button data-op="half">½</button><button data-op="double">2×</button><button data-op="max">Max</button></div></div>
+        <div class="pvchance" id="pvChance"></div>
+        <button class="btn yellow" id="pvGo">Stavka qo'yish</button>
+        <button class="btn ghost" id="pvCancel" hidden>Stavkamni qaytarish</button>
         <p class="hint" id="pvInfo"></p>
       </div>
-      <div class="sechead"><h4>Ochiq duellar</h4><span>Stavka yozing va qo'shiling</span></div>
-      <div id="pvOpen" class="pvlist"></div>
-      <div class="sechead"><h4>So'nggi natijalar</h4></div>
-      <div id="pvRecent" class="list"></div>
+      <details class="how"><summary>ⓘ How it works</summary>
+        <p>Har raundda <b>Epic bot</b> o'zi stavka qo'yadi. Siz stavka qo'ysangiz <b>10 soniyalik hisoblagich</b> boshlanadi, shu vaqtda boshqalar ham qo'shilishi mumkin. Hisoblagich tugagach to'p g'ildirak o'rtasidan tashlanadi va aylanib birovga tushadi. <b>Kim ko'p tiksa, g'ildirakda shuncha katta joy egallaydi</b>.</p>
+        <p>Raund hash: natija raund boshida belgilab qo'yiladi (<code>sha256(seed)</code>). Raund tugagach <code>seed</code> ochiladi va hash bilan tekshirish mumkin.</p>
+      </details>
     </section>
 
     <!-- ============ PLAY HUB ============ -->
